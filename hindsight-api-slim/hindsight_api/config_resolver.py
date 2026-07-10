@@ -331,22 +331,12 @@ class ConfigResolver:
             logger.error(f"Failed to bulk-load bank configs: {e}")
         return result
 
-    async def update_bank_config(
+    async def validate_bank_config_updates(
         self, bank_id: str, updates: dict[str, Any], context: RequestContext | None = None
-    ) -> None:
+    ) -> dict[str, Any]:
         """
-        Update bank configuration overrides (with permission checking).
-
-        Args:
-            bank_id: Bank identifier
-            updates: Dict of config field names to new values.
-                    Keys can be in env var format (HINDSIGHT_API_LLM_PROVIDER)
-                    or Python field format (llm_provider).
-                    Only configurable fields are allowed.
-            context: Request context for permission checking
-
-        Raises:
-            ValueError: If attempting to override invalid/disallowed fields
+        Validate bank configuration overrides (with permission checking).
+        Returns the normalized, validated updates dict without persisting.
         """
         # Normalize keys
         normalized_updates = normalize_config_dict(updates)
@@ -388,7 +378,7 @@ class ConfigResolver:
                             f"Not allowed to modify fields: {sorted(disallowed)}. "
                             f"Your permissions allow: {sorted(list(allowed_fields)[:10])}..."
                             if allowed_fields
-                            else "Not allowed to modify fields: {sorted(disallowed)}. "
+                            else f"Not allowed to modify fields: {sorted(disallowed)}. "
                             "Your permissions do not allow any config modifications."
                         )
             except ValueError:
@@ -443,6 +433,27 @@ class ConfigResolver:
             )
             _validate_retain_strategy_chunking(base_config, base_config.retain_strategies)
 
+        return normalized_updates
+
+    async def update_bank_config(
+        self, bank_id: str, updates: dict[str, Any], context: RequestContext | None = None
+    ) -> None:
+        """
+        Update bank configuration overrides (with permission checking).
+
+        Args:
+            bank_id: Bank identifier
+            updates: Dict of config field names to new values.
+                    Keys can be in env var format (HINDSIGHT_API_LLM_PROVIDER)
+                    or Python field format (llm_provider).
+                    Only configurable fields are allowed.
+            context: Request context for permission checking
+
+        Raises:
+            ValueError: If attempting to override invalid/disallowed fields
+        """
+        normalized_updates = await self.validate_bank_config_updates(bank_id, updates, context)
+
         # Persist the override. Banks are created lazily (on first retain), so a
         # PATCH that precedes any ingestion would otherwise UPDATE zero rows and
         # silently no-op while returning 200. Ensure the bank row exists first
@@ -452,6 +463,9 @@ class ConfigResolver:
         from .engine.retain.fact_storage import ensure_bank_exists
 
         async with self._backend.acquire() as conn:
+            # We explicitly execute the initial ensure_bank_exists call in a transaction to safely handle the
+            # ON CONFLICT DO NOTHING insertion, then fetch the updated row and compute the overlay,
+            # then finally update in the same transaction to prevent race conditions.
             await ensure_bank_exists(conn, bank_id, ops=self._backend.ops)
             await conn.execute(
                 f"""

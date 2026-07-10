@@ -3236,6 +3236,23 @@ async def _do_update_bank(
             Supports all configurable fields (retain_mission, disposition_*, etc.).
             The config resolver validates keys and rejects non-configurable/credential fields.
     """
+    effective_config: dict[str, Any] = dict(config_updates) if config_updates else {}
+    if mission is not None and "reflect_mission" not in effective_config:
+        effective_config["reflect_mission"] = mission
+
+    # Pre-validate all requested operations
+    if hasattr(memory, "_verify_operation"):
+        # We always read/provision
+        await memory._verify_operation(target_bank, "get_bank_profile", request_context)
+        if name is not None:
+            await memory._verify_operation(target_bank, "update_bank", request_context)
+        if effective_config:
+            await memory._verify_operation(target_bank, "update_bank_config", request_context)
+
+    # Validate config payload and permissions BEFORE any side effects
+    if effective_config:
+        await memory._config_resolver.validate_bank_config_updates(target_bank, effective_config, request_context)
+
     # Update display name via engine (stored in DB banks table)
     if name is not None:
         await memory.update_bank(
@@ -3243,11 +3260,6 @@ async def _do_update_bank(
             name=name,
             request_context=request_context,
         )
-
-    # Merge deprecated mission alias into config_updates as reflect_mission
-    effective_config: dict[str, Any] = dict(config_updates) if config_updates else {}
-    if mission is not None and "reflect_mission" not in effective_config:
-        effective_config["reflect_mission"] = mission
 
     if effective_config:
         await memory._config_resolver.update_bank_config(target_bank, effective_config, request_context)

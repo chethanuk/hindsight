@@ -5648,6 +5648,20 @@ def _register_routes(app: FastAPI):
     ):
         """Create or update an agent with disposition and mission."""
         try:
+            config_updates = request.get_config_updates()
+
+            if hasattr(app.state.memory, "_verify_operation"):
+                # Pre-validate ALL requested operations
+                await app.state.memory._verify_operation(bank_id, "get_bank_profile", request_context)
+                if request.name is not None:
+                    await app.state.memory._verify_operation(bank_id, "update_bank", request_context)
+                if config_updates:
+                    await app.state.memory._verify_operation(bank_id, "update_bank_config", request_context)
+            
+            if config_updates:
+                # Validate config payload and permissions BEFORE any side effects
+                await app.state.memory._config_resolver.validate_bank_config_updates(bank_id, config_updates, request_context)
+
             # Ensure bank exists by getting profile (auto-creates with defaults)
             await app.state.memory.get_bank_profile(bank_id, request_context=request_context)
 
@@ -5660,7 +5674,6 @@ def _register_routes(app: FastAPI):
                 )
 
             # Apply all config overrides (includes reflect_mission, disposition, retain settings)
-            config_updates = request.get_config_updates()
             if config_updates:
                 await app.state.memory._config_resolver.update_bank_config(bank_id, config_updates, request_context)
 
@@ -5704,6 +5717,20 @@ def _register_routes(app: FastAPI):
     ):
         """Partially update an agent's profile (name, mission, disposition)."""
         try:
+            config_updates = request.get_config_updates()
+
+            if hasattr(app.state.memory, "_verify_operation"):
+                # Pre-validate ALL requested operations
+                await app.state.memory._verify_operation(bank_id, "get_bank_profile", request_context)
+                if request.name is not None:
+                    await app.state.memory._verify_operation(bank_id, "update_bank", request_context)
+                if config_updates:
+                    await app.state.memory._verify_operation(bank_id, "update_bank_config", request_context)
+
+            if config_updates:
+                # Validate config payload and permissions BEFORE any side effects
+                await app.state.memory._config_resolver.validate_bank_config_updates(bank_id, config_updates, request_context)
+
             # PATCH is update-only; missing banks must not be created as a
             # side effect of reading the profile.
             existing_profile = await app.state.memory.get_bank_profile(
@@ -5721,7 +5748,6 @@ def _register_routes(app: FastAPI):
                 )
 
             # Apply all config overrides (includes reflect_mission, disposition, retain settings)
-            config_updates = request.get_config_updates()
             if config_updates:
                 await app.state.memory._config_resolver.update_bank_config(bank_id, config_updates, request_context)
 
@@ -5832,6 +5858,21 @@ def _register_routes(app: FastAPI):
                     status_code=400,
                     detail=f"Template validation failed: {'; '.join(validation_errors)}",
                 )
+            if hasattr(app.state.memory, "_verify_operation"):
+                # Pre-validate all requested operations before making any changes
+                await app.state.memory._verify_operation(bank_id, "get_bank_profile", request_context)
+                if body.bank:
+                    await app.state.memory._verify_operation(bank_id, "update_bank_config", request_context)
+                if body.mental_models:
+                    await app.state.memory._verify_operation(bank_id, "create_mental_model", request_context)
+                if body.directives:
+                    await app.state.memory._verify_operation(bank_id, "create_directive", request_context)
+
+            if body.bank:
+                config_updates = body.bank.get_config_updates()
+                if config_updates:
+                    await app.state.memory._config_resolver.validate_bank_config_updates(bank_id, config_updates, request_context)
+
             if dry_run:
                 return BankTemplateImportResponse(
                     bank_id=bank_id,
@@ -6259,7 +6300,9 @@ def _register_routes(app: FastAPI):
     )
     @audited("update_bank_config")
     async def api_update_bank_config(
-        bank_id: str, request: BankConfigUpdate, request_context: RequestContext = Depends(get_request_context)
+        bank_id: str,
+        request: BankConfigUpdate,
+        request_context: RequestContext = Depends(get_request_context),
     ):
         """Update configuration overrides for a bank."""
         if not get_config().enable_bank_config_api:
@@ -6289,14 +6332,20 @@ def _register_routes(app: FastAPI):
                 except ValueError as exc:
                     raise HTTPException(status_code=422, detail=f"invalid memory_defense policy: {exc}")
 
+            if request.updates:
+                await app.state.memory._config_resolver.validate_bank_config_updates(bank_id, request.updates, request_context)
+
             # Update config via config resolver (validates configurable fields and permissions)
             await app.state.memory._config_resolver.update_bank_config(bank_id, request.updates, request_context)
 
-            # Return updated config
-            config_dict = await app.state.memory._config_resolver.get_bank_config(bank_id, request_context)
-            bank_overrides = await app.state.memory._config_resolver._load_bank_config(bank_id)
-
-            return BankConfigResponse(bank_id=bank_id, config=config_dict, overrides=bank_overrides)
+            # Re-read profile so we return the latest config
+            resolved_dict = await app.state.memory._config_resolver.get_bank_config(bank_id, request_context)
+            overrides = await app.state.memory._config_resolver._load_bank_config(bank_id)
+            return BankConfigResponse(
+                bank_id=bank_id,
+                config=resolved_dict,
+                overrides=overrides,
+            )
         except OperationValidationError as e:
             raise HTTPException(status_code=e.status_code, detail=e.reason)
         except ValueError as e:
