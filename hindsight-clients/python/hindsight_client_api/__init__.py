@@ -65,6 +65,7 @@ from hindsight_client_api.models.bank_template_manifest import BankTemplateManif
 from hindsight_client_api.models.bank_template_mental_model import BankTemplateMentalModel
 from hindsight_client_api.models.budget import Budget
 from hindsight_client_api.models.cancel_operation_response import CancelOperationResponse
+from hindsight_client_api.models.delete_operation_response import DeleteOperationResponse
 from hindsight_client_api.models.child_operation_status import ChildOperationStatus
 from hindsight_client_api.models.chunk_data import ChunkData
 from hindsight_client_api.models.chunk_include_options import ChunkIncludeOptions

@@ -229,6 +229,9 @@ import type {
   UpdateWebhookData,
   UpdateWebhookErrors,
   UpdateWebhookResponses,
+  DeleteOperationData,
+  DeleteOperationErrors,
+  DeleteOperationResponses,
 } from "./types.gen";
 
 export type Options<
@@ -898,6 +901,19 @@ export const retryOperation = <ThrowOnError extends boolean = false>(
 ) =>
   (options.client ?? client).post<RetryOperationResponses, RetryOperationErrors, ThrowOnError>({
     url: "/v1/default/banks/{bank_id}/operations/{operation_id}/retry",
+    ...options,
+  });
+
+/**
+ * Delete a terminal async operation
+ *
+ * Permanently remove a failed, cancelled, or completed async operation record
+ */
+export const deleteOperation = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteOperationData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<DeleteOperationResponses, DeleteOperationErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/operations/{operation_id}/record",
     ...options,
   });
 

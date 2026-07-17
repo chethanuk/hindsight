@@ -405,7 +405,7 @@
           "Memory"
         ],
         "summary": "Dry-run fact extraction (preview, no persistence)",
-        "description": "Preview what the retain step would extract from text WITHOUT changing the bank \u2014 no entity resolution, links, embeddings, or persistence. Returns the candidate facts and the LLM token usage. Every prompt-affecting setting (retain mission, extraction mode, chunk size, \u2026) is overridable in the body to A/B a candidate config against the bank's current one. This is a read-only tool: nothing is stored.",
+        "description": "Preview what the retain step would extract from text WITHOUT changing the bank — no entity resolution, links, embeddings, or persistence. Returns the candidate facts and the LLM token usage. Every prompt-affecting setting (retain mission, extraction mode, chunk size, …) is overridable in the body to A/B a candidate config against the bank's current one. This is a read-only tool: nothing is stored.",
         "operationId": "dry_run_extract_memories",
         "parameters": [
           {
@@ -939,7 +939,7 @@
           "Banks"
         ],
         "summary": "Test the bank's LLM connectivity",
-        "description": "Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only \u2014 never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.",
+        "description": "Probe the LLMs this bank would use for retain / consolidation / reflect with one minimal call each (configs shared across operations are probed once), so you can discover 'not configured / unreachable' instead of a silent stall. Deliberate action (makes a real provider call); not for polling. Returns status only — never the provider, model, endpoint, API key, or raw error. Disable with HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH=false.",
         "operationId": "test_bank_llm",
         "parameters": [
           {
@@ -3845,7 +3845,7 @@
           "Bank Templates"
         ],
         "summary": "Import bank template",
-        "description": "Import a bank template manifest to create or update a bank's configuration, mental models, and directives. If the bank does not exist it is created. Config fields are applied as per-bank overrides. Mental models are matched by id, directives by name \u2014 existing ones are updated, new ones are created. Use dry_run=true to validate the manifest without applying changes.",
+        "description": "Import a bank template manifest to create or update a bank's configuration, mental models, and directives. If the bank does not exist it is created. Config fields are applied as per-bank overrides. Mental models are matched by id, directives by name — existing ones are updated, new ones are created. Use dry_run=true to validate the manifest without applying changes.",
         "operationId": "import_bank_template",
         "parameters": [
           {
@@ -3975,7 +3975,7 @@
           "Document Transfer"
         ],
         "summary": "Export documents",
-        "description": "Export documents (extracted facts, entity names, causal links, chunks) from a bank as a transfer ZIP archive. Embeddings and database ids are not included \u2014 importing re-embeds with the target bank's model and re-resolves entities. Consolidated observations are excluded unless include_observations=true. Pass document_id query params to export specific documents, or omit to export the whole bank.",
+        "description": "Export documents (extracted facts, entity names, causal links, chunks) from a bank as a transfer ZIP archive. Embeddings and database ids are not included — importing re-embeds with the target bank's model and re-resolves entities. Consolidated observations are excluded unless include_observations=true. Pass document_id query params to export specific documents, or omit to export the whole bank.",
         "operationId": "export_documents",
         "parameters": [
           {
@@ -4064,7 +4064,7 @@
           "Document Transfer"
         ],
         "summary": "Import documents (async)",
-        "description": "Submit a transfer archive (produced by the export endpoint) for import into a bank. Runs as a background operation: facts are re-embedded with the target bank's embedding model and entities are re-resolved \u2014 no LLM extraction. Returns an operation_id; poll GET /v1/default/banks/{bank_id}/operations/{operation_id} for status and the imported/skipped counts in result_metadata. Use on_conflict to control existing document ids: skip (default), replace, or new-id.",
+        "description": "Submit a transfer archive (produced by the export endpoint) for import into a bank. Runs as a background operation: facts are re-embedded with the target bank's embedding model and entities are re-resolved — no LLM extraction. Returns an operation_id; poll GET /v1/default/banks/{bank_id}/operations/{operation_id} for status and the imported/skipped counts in result_metadata. Use on_conflict to control existing document ids: skip (default), replace, or new-id.",
         "operationId": "import_documents",
         "parameters": [
           {
@@ -4410,7 +4410,7 @@
           "Banks"
         ],
         "summary": "Get bank configuration",
-        "description": "Get fully resolved configuration for a bank including all hierarchical overrides (global \u2192 tenant \u2192 bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides.",
+        "description": "Get fully resolved configuration for a bank including all hierarchical overrides (global → tenant → bank). The 'config' field contains all resolved config values. The 'overrides' field shows only bank-specific overrides.",
         "operationId": "get_bank_config",
         "parameters": [
           {
@@ -5182,7 +5182,7 @@
           "Files"
         ],
         "summary": "Convert files to memories",
-        "description": "Upload files (PDF, DOCX, etc.), convert them to markdown, and retain as memories.\n\nThis endpoint handles file upload, conversion, and memory creation in a single operation.\n\n**Features:**\n- Supports PDF, DOCX, PPTX, XLSX, images (parser-dependent OCR), audio (with transcription)\n- Automatic file-to-markdown conversion using pluggable parsers\n- Files stored in object storage (PostgreSQL by default, S3 for production)\n- Each file becomes a separate document with optional metadata/tags\n- Always processes asynchronously \u2014 returns operation IDs immediately\n\n**The system automatically:**\n1. Stores uploaded files in object storage\n2. Converts files to markdown\n3. Creates document records with file metadata\n4. Extracts facts and creates memory units (same as regular retain)\n\nUse the operations endpoint to monitor progress.\n\n**Request format:** multipart/form-data with:\n- `files`: One or more files to upload\n- `request`: JSON string with FileRetainRequest model\n\n**Parser selection:**\n- Set `parser` in the request body to override the server default for all files.\n- Set `parser` inside a `files_metadata` entry for per-file control.\n- Pass a list (e.g. `['iris', 'markitdown']`) to define an ordered fallback chain \u2014 each parser is tried in sequence until one succeeds.\n- Falls back to the server default (`HINDSIGHT_API_FILE_PARSER`) if not specified.\n- Only parsers enabled on the server may be requested; others return HTTP 400.",
+        "description": "Upload files (PDF, DOCX, etc.), convert them to markdown, and retain as memories.\n\nThis endpoint handles file upload, conversion, and memory creation in a single operation.\n\n**Features:**\n- Supports PDF, DOCX, PPTX, XLSX, images (parser-dependent OCR), audio (with transcription)\n- Automatic file-to-markdown conversion using pluggable parsers\n- Files stored in object storage (PostgreSQL by default, S3 for production)\n- Each file becomes a separate document with optional metadata/tags\n- Always processes asynchronously — returns operation IDs immediately\n\n**The system automatically:**\n1. Stores uploaded files in object storage\n2. Converts files to markdown\n3. Creates document records with file metadata\n4. Extracts facts and creates memory units (same as regular retain)\n\nUse the operations endpoint to monitor progress.\n\n**Request format:** multipart/form-data with:\n- `files`: One or more files to upload\n- `request`: JSON string with FileRetainRequest model\n\n**Parser selection:**\n- Set `parser` in the request body to override the server default for all files.\n- Set `parser` inside a `files_metadata` entry for per-file control.\n- Pass a list (e.g. `['iris', 'markitdown']`) to define an ordered fallback chain — each parser is tried in sequence until one succeeds.\n- Falls back to the server default (`HINDSIGHT_API_FILE_PARSER`) if not specified.\n- Only parsers enabled on the server may be requested; others return HTTP 400.",
         "operationId": "file_retain",
         "parameters": [
           {
@@ -5840,6 +5840,74 @@
           }
         }
       }
+    },
+    "/v1/default/banks/{bank_id}/operations/{operation_id}/record": {
+      "delete": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Delete a terminal async operation",
+        "description": "Permanently remove a failed, cancelled, or completed async operation record",
+        "operationId": "delete_operation",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Operation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteOperationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5949,7 +6017,7 @@
               }
             ],
             "title": "Duration Ms",
-            "description": "Server-computed duration in milliseconds (started_at \u2192 ended_at). Null if not yet completed."
+            "description": "Server-computed duration in milliseconds (started_at → ended_at). Null if not yet completed."
           },
           "request": {
             "anyOf": [
@@ -6335,7 +6403,7 @@
           "operations"
         ],
         "title": "BankLlmHealthResponse",
-        "description": "Per-bank LLM connectivity probe across retain/consolidation/reflect. Operations\nthat share a configuration are probed once. Discloses status only \u2014 never the\nprovider, model, endpoint, API key, or raw error.",
+        "description": "Per-bank LLM connectivity probe across retain/consolidation/reflect. Operations\nthat share a configuration are probed once. Discloses status only — never the\nprovider, model, endpoint, API key, or raw error.",
         "example": {
           "bank_id": "user123",
           "operations": [
@@ -8388,7 +8456,7 @@
           "content"
         ],
         "title": "DryRunExtractRequest",
-        "description": "Request to run fact extraction ONLY (no resolution/links/embeddings/persistence).\n\nEvery field below the content/context/date is a prompt-affecting override applied just for this\ncall \u2014 used to preview what a candidate retain mission (or any extraction setting) would extract,\nwithout changing the bank. Unset (null) fields fall back to the bank's resolved config."
+        "description": "Request to run fact extraction ONLY (no resolution/links/embeddings/persistence).\n\nEvery field below the content/context/date is a prompt-affecting override applied just for this\ncall — used to preview what a candidate retain mission (or any extraction setting) would extract,\nwithout changing the bank. Unset (null) fields fall back to the bank's resolved config."
       },
       "DryRunExtractionResult": {
         "properties": {
@@ -8821,7 +8889,7 @@
           "fact_type"
         ],
         "title": "ExtractedFact",
-        "description": "A single candidate fact produced by dry-run extraction (no resolution/links/persistence).\n\nA deliberate subset of the persisted memory-unit shape \u2014 only the fields a fresh extraction\nyields. Storage/consolidation/curation fields (id, document_id, chunk_id, proof_count, state, \u2026)\nare omitted because nothing is stored. Entities are raw, unresolved names."
+        "description": "A single candidate fact produced by dry-run extraction (no resolution/links/persistence).\n\nA deliberate subset of the persisted memory-unit shape — only the fields a fresh extraction\nyields. Storage/consolidation/curation fields (id, document_id, chunk_id, proof_count, state, …)\nare omitted because nothing is stored. Entities are raw, unresolved names."
       },
       "FactsIncludeOptions": {
         "properties": {},
@@ -9638,7 +9706,7 @@
               "timeout"
             ],
             "title": "LlmHealthStatus",
-            "description": "'connected'; 'not_configured' (provider is 'none'); 'auth_failed' (rejected \u2014 usually a wrong/expired API key); 'unreachable' (call failed); 'timeout'"
+            "description": "'connected'; 'not_configured' (provider is 'none'); 'auth_failed' (rejected — usually a wrong/expired API key); 'unreachable' (call failed); 'timeout'"
           },
           "latency_ms": {
             "anyOf": [
@@ -9660,7 +9728,7 @@
           "status"
         ],
         "title": "LlmOperationHealth",
-        "description": "LLM connectivity status for a single operation. Status only \u2014 no provider/model/\nendpoint/error, so the probe never discloses the LLM configuration."
+        "description": "LLM connectivity status for a single operation. Status only — no provider/model/\nendpoint/error, so the probe never discloses the LLM configuration."
       },
       "MemoriesTimeseriesResponse": {
         "properties": {
@@ -9816,7 +9884,7 @@
               }
             ],
             "title": "ObservationScopes",
-            "description": "How to scope observations during consolidation. 'per_tag' runs one consolidation pass per individual tag, creating separate observations for each tag. 'combined' (default) runs a single pass with all tags together. 'shared' runs a single pass over one global, untagged scope, so memories consolidate together regardless of their tags \u2014 useful for deduplicating across volatile per-call provenance tags (e.g. per-session ids) while keeping those tags on the source facts. A list of tag lists runs one pass per inner list, giving full control over which combinations to use."
+            "description": "How to scope observations during consolidation. 'per_tag' runs one consolidation pass per individual tag, creating separate observations for each tag. 'combined' (default) runs a single pass with all tags together. 'shared' runs a single pass over one global, untagged scope, so memories consolidate together regardless of their tags — useful for deduplicating across volatile per-call provenance tags (e.g. per-session ids) while keeping those tags on the source facts. A list of tag lists runs one pass per inner list, giving full control over which combinations to use."
           },
           "strategy": {
             "anyOf": [
@@ -10078,7 +10146,7 @@
               }
             ],
             "title": "Refresh Cron",
-            "description": "Cron expression (UTC, standard 5-field syntax, e.g. '0 3 * * *' for daily at 03:00 UTC) for refreshing this mental model on a fixed schedule. Mutually exclusive with refresh_after_consolidation \u2014 a model refreshes either after consolidation or on a cron schedule, not both. A scheduled refresh only runs when the model is stale (new memories in its scope since the last refresh); if nothing changed, the tick is skipped to avoid a wasted LLM call. null = no schedule."
+            "description": "Cron expression (UTC, standard 5-field syntax, e.g. '0 3 * * *' for daily at 03:00 UTC) for refreshing this mental model on a fixed schedule. Mutually exclusive with refresh_after_consolidation — a model refreshes either after consolidation or on a cron schedule, not both. A scheduled refresh only runs when the model is stale (new memories in its scope since the last refresh); if nothing changed, the tick is skipped to avoid a wasted LLM call. null = no schedule."
           },
           "fact_types": {
             "anyOf": [
@@ -10237,7 +10305,7 @@
               }
             ],
             "title": "Refresh Cron",
-            "description": "Cron expression (UTC, standard 5-field syntax, e.g. '0 3 * * *' for daily at 03:00 UTC) for refreshing this mental model on a fixed schedule. Mutually exclusive with refresh_after_consolidation \u2014 a model refreshes either after consolidation or on a cron schedule, not both. A scheduled refresh only runs when the model is stale (new memories in its scope since the last refresh); if nothing changed, the tick is skipped to avoid a wasted LLM call. null = no schedule."
+            "description": "Cron expression (UTC, standard 5-field syntax, e.g. '0 3 * * *' for daily at 03:00 UTC) for refreshing this mental model on a fixed schedule. Mutually exclusive with refresh_after_consolidation — a model refreshes either after consolidation or on a cron schedule, not both. A scheduled refresh only runs when the model is stale (new memories in its scope since the last refresh); if nothing changed, the tick is skipped to avoid a wasted LLM call. null = no schedule."
           },
           "fact_types": {
             "anyOf": [
@@ -10544,7 +10612,7 @@
           "at"
         ],
         "title": "OperationProgress",
-        "description": "Last-known progress snapshot for a long-running async operation.\n\nWritten at coarse phase/batch boundaries by the worker (consolidation, batch\nretain). Lets an operator polling the operation status API distinguish a healthy\nlong-running job (``processed`` advancing across polls) from a frozen one (same\nnumbers, no movement in ``at``). Absent (``null``) on operations that never\nreached a checkpoint \u2014 completed-instantly or pre-feature rows."
+        "description": "Last-known progress snapshot for a long-running async operation.\n\nWritten at coarse phase/batch boundaries by the worker (consolidation, batch\nretain). Lets an operator polling the operation status API distinguish a healthy\nlong-running job (``processed`` advancing across polls) from a frozen one (same\nnumbers, no movement in ``at``). Absent (``null``) on operations that never\nreached a checkpoint — completed-instantly or pre-feature rows."
       },
       "OperationResponse": {
         "properties": {
@@ -10636,7 +10704,7 @@
               }
             ],
             "title": "Next Retry At",
-            "description": "When the worker will next attempt this operation. For a pending operation, a value in the future indicates the task is waiting rather than available for immediate pickup \u2014 for example, an extension may have raised DeferOperation to park the task until some backpressure window opens. Always null for completed tasks."
+            "description": "When the worker will next attempt this operation. For a pending operation, a value in the future indicates the task is waiting rather than available for immediate pickup — for example, an extension may have raised DeferOperation to park the task until some backpressure window opens. Always null for completed tasks."
           },
           "progress": {
             "anyOf": [
@@ -11010,7 +11078,7 @@
                 "type": "null"
               }
             ],
-            "description": "Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request); `reranker` and `final` are post-ranking filters on the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care \u2014 the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first)."
+            "description": "Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request); `reranker` and `final` are post-ranking filters on the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care — the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first)."
           }
         },
         "type": "object",
@@ -13221,6 +13289,35 @@
         ],
         "title": "WebhookResponse",
         "description": "Response model for a webhook."
+      },
+      "DeleteOperationResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "operation_id": {
+            "type": "string",
+            "title": "Operation Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "operation_id"
+        ],
+        "title": "DeleteOperationResponse",
+        "description": "Response model for delete operation endpoint.",
+        "example": {
+          "message": "Operation 550e8400-e29b-41d4-a716-446655440000 deleted",
+          "operation_id": "550e8400-e29b-41d4-a716-446655440000",
+          "success": true
+        }
       }
     }
   }
