@@ -10862,6 +10862,12 @@ class MemoryEngine(MemoryEngineInterface):
             for _facts in based_on_serialized_payload.values():
                 delta_supporting_facts.extend(_facts)
 
+            # Grounding = facts reflect retrieved THIS run. Directives are bank-config
+            # injection (list_directives ~:9388, appended ~:9592), not retrieval evidence.
+            # Must compute BEFORE the delta based_on merge below contaminates the payload.
+            fresh_grounding_count = sum(
+                len(facts) for ftype, facts in based_on_serialized_payload.items() if ftype != "directives"
+            )
             # In delta mode, based_on must accumulate: the mental model is
             # grounded on ALL facts ever used, not just the latest delta's new
             # ones. Merge previous based_on with current, deduplicating by id.
@@ -10928,7 +10934,9 @@ class MemoryEngine(MemoryEngineInterface):
 
                     # No new facts since last refresh — skip the delta LLM call
                     # and preserve existing content unchanged.
-                    if not supporting_facts:
+                    # Use non-directive grounding only: directives are bank-config
+                    # injection and must not count as retrieved evidence (#2894).
+                    if fresh_grounding_count == 0:
                         logger.info(
                             f"[MENTAL_MODELS] Delta refresh for {mental_model_id}: "
                             "no new facts found, preserving content"
@@ -11005,6 +11013,33 @@ class MemoryEngine(MemoryEngineInterface):
             # failures from callers (workers, tests). So: preserve existing
             # content in the DB (and audit the failure via reflect_response),
             # then RAISE so the caller knows the refresh didn't happen.
+            #
+            # Also refuse when reflect retrieved zero memories (based_on empty
+            # of non-directive facts) and the model already has meaningful
+            # content: the LLM often emits a non-empty generic refusal like
+            # "I don't have information" which would otherwise pass the empty
+            # check and overwrite good content (#2894 consolidation race).
+            if fresh_grounding_count == 0 and has_delta_baseline:
+                logger.warning(
+                    f"[MENTAL_MODELS] Refresh for {mental_model_id}: "
+                    "based_on has no retrieved memories (directives excluded); "
+                    "preserving previous content and raising MentalModelRefreshError."
+                )
+                reflect_response_payload["refresh_skipped"] = "no_memories_found"
+                # Persist the reflect_response (so the failure is auditable) and
+                # the source-query tracking, but do NOT touch content/structured.
+                await self.update_mental_model(
+                    bank_id,
+                    mental_model_id,
+                    reflect_response=reflect_response_payload,
+                    last_refreshed_source_query=current_source_query,
+                    request_context=request_context,
+                )
+                raise MentalModelRefreshError(
+                    f"Refresh for mental model {mental_model_id} skipped: reflect retrieved no "
+                    "memories (based_on empty). Previous content preserved; "
+                    "reflect_response.refresh_skipped == 'no_memories_found' for audit."
+                )
             if not final_content.strip():
                 logger.warning(
                     f"[MENTAL_MODELS] Refresh for {mental_model_id} produced empty content; "

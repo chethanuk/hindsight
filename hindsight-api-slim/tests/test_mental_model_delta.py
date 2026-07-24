@@ -31,20 +31,21 @@ from hindsight_api.engine.llm_wrapper import LLMConfig
 from hindsight_api.engine.response_models import ReflectResult
 
 
-def _canned_reflect_result(text: str, facts: list[dict] | None = None) -> ReflectResult:
+def _canned_reflect_result(
+    text: str,
+    facts: list[dict] | None = None,
+    based_on: dict[str, list[dict]] | None = None,
+) -> ReflectResult:
     """Build a minimal ReflectResult for monkey-patching reflect_async."""
-    return ReflectResult.model_validate(
-        {
-            "text": text,
-            "based_on": {
-                "observation": facts or [],
-                "world": [],
-                "experience": [],
-                "mental-models": [],
-                "directives": [],
-            },
+    if based_on is None:
+        based_on = {
+            "observation": facts or [],
+            "world": [],
+            "experience": [],
+            "mental-models": [],
+            "directives": [],
         }
-    )
+    return ReflectResult.model_validate({"text": text, "based_on": based_on})
 
 
 @pytest.fixture
@@ -57,12 +58,18 @@ def patch_reflect(monkeypatch):
         assert len(calls) == 1
     """
 
-    def _install(memory: MemoryEngine, *, text: str, facts: list[dict] | None = None):
+    def _install(
+        memory: MemoryEngine,
+        *,
+        text: str,
+        facts: list[dict] | None = None,
+        based_on: dict[str, list[dict]] | None = None,
+    ):
         calls: list[dict] = []
 
         async def fake_reflect_async(**kwargs):
             calls.append(kwargs)
-            return _canned_reflect_result(text, facts)
+            return _canned_reflect_result(text, facts, based_on)
 
         monkeypatch.setattr(memory, "reflect_async", fake_reflect_async)
         return calls
@@ -137,7 +144,20 @@ class TestDeltaRefreshPlumbing:
             request_context=request_context,
         )
 
-        patch_reflect(memory, text="# Team\n\nRegenerated from scratch.")
+        # Non-empty based_on required: empty retrieval with existing content
+        # is refused by the no_memories_found guard (#2894).
+        patch_reflect(
+            memory,
+            text="# Team\n\nRegenerated from scratch.",
+            facts=[
+                {
+                    "id": "obs-team",
+                    "text": "Team was regenerated",
+                    "type": "observation",
+                    "context": None,
+                }
+            ],
+        )
         llm_calls = patch_llm_call(memory, returns="should-not-be-called")
 
         refreshed = await memory.refresh_mental_model(
@@ -248,7 +268,8 @@ class TestDeltaRefreshPlumbing:
         )
 
         # First refresh: establishes last_refreshed_source_query.
-        patch_reflect(memory, text="# Team\n\nFirst pass.")
+        # Empty facts → no_new_facts early return (still writes last_refreshed_source_query).
+        patch_reflect(memory, text="# Team\n\nFirst pass.", facts=[])
         patch_llm_call(memory, returns="unused-first")
         await memory.refresh_mental_model(bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context)
 
@@ -261,7 +282,20 @@ class TestDeltaRefreshPlumbing:
         )
 
         # Second refresh under the new query must do a FULL rewrite, not a delta merge.
-        patch_reflect(memory, text="# Customers\n\nBrand new topic.")
+        # Non-empty based_on required: full-path + existing content + empty retrieval
+        # is refused by the no_memories_found guard (#2894).
+        patch_reflect(
+            memory,
+            text="# Customers\n\nBrand new topic.",
+            facts=[
+                {
+                    "id": "obs-customers",
+                    "text": "Customers topic fact",
+                    "type": "observation",
+                    "context": None,
+                }
+            ],
+        )
         llm_calls = patch_llm_call(memory, returns="should-not-be-called")
 
         refreshed = await memory.refresh_mental_model(
@@ -628,6 +662,238 @@ class TestDeltaRefreshPlumbing:
         )
         rr = preserved.get("reflect_response") or {}
         assert rr.get("refresh_skipped") == "empty_candidate"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    # ------------------------------------------------------------------
+    # #2894 — empty based_on must not overwrite existing content with a
+    # non-empty generic LLM refusal ("I don't have information…").
+    # ------------------------------------------------------------------
+
+    _GENERIC_NO_INFO = "I don't have information about this topic."
+    _DIRECTIVES_ONLY: dict[str, list[dict]] = {
+        "observation": [],
+        "world": [],
+        "experience": [],
+        "mental-models": [],
+        "directives": [
+            {
+                "id": "dir-1",
+                "text": "Always be concise",
+                "type": "directives",
+                "context": None,
+            }
+        ],
+    }
+    _MENTAL_MODELS_ONLY: dict[str, list[dict]] = {
+        "observation": [],
+        "world": [],
+        "experience": [],
+        "mental-models": [
+            {
+                "id": "mm-1",
+                "text": "Related model content about the team",
+                "type": "mental-models",
+                "context": None,
+            }
+        ],
+        "directives": [],
+    }
+
+    @pytest.mark.parametrize(
+        "case,based_on,facts,expect_skip",
+        [
+            ("no_facts", None, [], True),
+            ("directives_only", _DIRECTIVES_ONLY, None, True),
+            ("mental_models_only", _MENTAL_MODELS_ONLY, None, False),
+        ],
+        ids=["no_facts", "directives_only", "mental_models_only"],
+    )
+    async def test_full_refresh_empty_based_on_preserves_content(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        case: str,
+        based_on: dict[str, list[dict]] | None,
+        facts: list[dict] | None,
+        expect_skip: bool,
+    ):
+        """#2894: full-mode refresh with zero retrieved facts must not overwrite
+        existing content with a generic non-empty LLM refusal. Directives alone
+        are bank-config injection, not retrieval evidence; mental-models count
+        as grounding so they may still update content.
+        """
+        from hindsight_api.engine.memory_engine import MentalModelRefreshError
+
+        bank_id = f"test-empty-based-on-{case}-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+
+        existing = "# Team\n\nAlice is the lead.\n"
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content=existing,
+            # no trigger.mode → full mode (default)
+            request_context=request_context,
+        )
+
+        patch_reflect(
+            memory,
+            text=self._GENERIC_NO_INFO,
+            facts=facts,
+            based_on=based_on,
+        )
+
+        if expect_skip:
+            with pytest.raises(MentalModelRefreshError):
+                await memory.refresh_mental_model(
+                    bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+                )
+            preserved = await memory.get_mental_model(
+                bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+            )
+            assert preserved is not None
+            assert preserved["content"] == existing, (
+                f"case={case}: empty based_on overwrote existing content with generic refusal"
+            )
+            rr = preserved.get("reflect_response") or {}
+            assert rr.get("refresh_skipped") == "no_memories_found"
+        else:
+            refreshed = await memory.refresh_mental_model(
+                bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+            )
+            assert refreshed is not None
+            # mental-models count as grounding → content may update (no raise)
+            assert (refreshed.get("reflect_response") or {}).get("refresh_skipped") != "no_memories_found"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_full_refresh_empty_based_on_pending_baseline_still_writes(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+    ):
+        """#2894 Test B: pending placeholder is not a meaningful baseline — allow
+        writing the generic candidate (legacy path for brand-new models).
+        """
+        from hindsight_api.engine.memory_engine import MENTAL_MODEL_PENDING_CONTENT
+
+        bank_id = f"test-empty-based-on-pending-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content=MENTAL_MODEL_PENDING_CONTENT,
+            request_context=request_context,
+        )
+
+        patch_reflect(memory, text=self._GENERIC_NO_INFO, facts=[])
+
+        refreshed = await memory.refresh_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert refreshed is not None
+        assert refreshed["content"] == self._GENERIC_NO_INFO
+        assert (refreshed.get("reflect_response") or {}).get("refresh_skipped") != "no_memories_found"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_delta_fallback_empty_based_on_preserves_content(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        monkeypatch,
+    ):
+        """#2894 Test C: delta mode whose structured path fails falls back to full
+        text; with zero retrieved facts the no_memories_found guard must still fire.
+        """
+        import hindsight_api.engine.reflect.structured_doc as structured_doc_mod
+        from hindsight_api.engine.memory_engine import MentalModelRefreshError
+
+        bank_id = f"test-empty-based-on-delta-fb-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+
+        existing = "# Team\n\nAlice is the lead.\n"
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content=existing,
+            trigger={"mode": "delta"},
+            request_context=request_context,
+        )
+
+        patch_reflect(memory, text=self._GENERIC_NO_INFO, facts=[])
+
+        def boom_parse(_markdown: str):
+            raise RuntimeError("simulated structured parse failure")
+
+        monkeypatch.setattr(structured_doc_mod, "parse_markdown", boom_parse)
+
+        with pytest.raises(MentalModelRefreshError):
+            await memory.refresh_mental_model(
+                bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+            )
+
+        preserved = await memory.get_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert preserved is not None
+        assert preserved["content"] == existing
+        rr = preserved.get("reflect_response") or {}
+        assert rr.get("refresh_skipped") == "no_memories_found"
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_delta_directives_only_skips_as_no_new_facts(
+        self,
+        memory: MemoryEngine,
+        request_context: RequestContext,
+        patch_reflect,
+        monkeypatch,
+    ):
+        """#2894 Test D: delta mode with directives-only based_on must treat
+        grounding as empty (directives are not retrieval) → no_new_facts early
+        return; content preserved; delta LLM never called.
+        """
+        bank_id = f"test-empty-based-on-delta-dir-{uuid.uuid4().hex[:8]}"
+        await memory.get_bank_profile(bank_id, request_context=request_context)
+
+        existing = "# Team\n\nAlice is the lead.\n\n## Members\n\n- Alice\n"
+        mm = await memory.create_mental_model(
+            bank_id=bank_id,
+            name="Team Info",
+            source_query="Tell me about the team",
+            content=existing,
+            trigger={"mode": "delta"},
+            request_context=request_context,
+        )
+
+        patch_reflect(
+            memory,
+            text=self._GENERIC_NO_INFO,
+            based_on=self._DIRECTIVES_ONLY,
+        )
+
+        async def boom(*, messages, **kwargs):
+            raise RuntimeError("delta LLM must not be called for directives-only based_on")
+
+        monkeypatch.setattr(memory._reflect_llm_config, "call", boom)
+
+        refreshed = await memory.refresh_mental_model(
+            bank_id=bank_id, mental_model_id=mm["id"], request_context=request_context
+        )
+        assert refreshed is not None
+        assert refreshed["content"] == existing
+        rr = refreshed.get("reflect_response") or {}
+        assert rr.get("delta_skipped_reason") == "no_new_facts"
+        assert rr.get("delta_applied") is False
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
