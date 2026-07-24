@@ -1893,11 +1893,17 @@ class TestMentalModelRefreshMaxTokens:
         await memory.wait_for_background_tasks()
 
         cap = 200
+        # Pending baseline: under no-tool mock LLMs reflect returns empty based_on
+        # and #2894's no_memories_found guard would refuse to overwrite a real
+        # baseline. This test is about the max_tokens cap on the written content,
+        # not the empty-retrieval guard (covered in test_mental_model_delta.py).
+        from hindsight_api.engine.memory_engine import MENTAL_MODEL_PENDING_CONTENT
+
         mm = await memory.create_mental_model(
             bank_id=bank_id,
             name="Team Summary (capped)",
             source_query="Give me a complete overview of every team member, what they own, and the recurring meetings.",
-            content="initial",
+            content=MENTAL_MODEL_PENDING_CONTENT,
             max_tokens=cap,
             request_context=request_context,
         )
