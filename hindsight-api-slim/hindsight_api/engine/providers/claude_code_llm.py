@@ -234,6 +234,7 @@ class ClaudeCodeLLM(LLMInterface):
         # this, single-turn calls intermittently fail with "Reached maximum
         # number of turns (1)" even though the prompt itself needs no tools.
         options = ClaudeAgentOptions(
+            model=self.model,  # Without this the CLI ignores the configured model (#2881)
             system_prompt=system_prompt if system_prompt else None,
             max_turns=1,  # Single-turn for API-style interactions
             tools=[],  # Disable built-in tools so nothing forces a ToolSearch deferral
@@ -537,6 +538,7 @@ class ClaudeCodeLLM(LLMInterface):
         # are loaded, forcing Claude to use ToolSearch first — which wastes the max_turns
         # budget and prevents direct MCP tool calls.
         options = ClaudeAgentOptions(
+            model=self.model,  # Without this the CLI ignores the configured model (#2881)
             system_prompt=system_prompt if system_prompt else None,
             tools=[],  # Disable built-in tools so MCP tools load eagerly
             max_turns=2,  # Allow tool call + tool result round-trip

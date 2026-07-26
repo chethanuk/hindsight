@@ -741,7 +741,7 @@ PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "vertexai": "google/gemini-3.1-flash-lite",
     "openai-codex": "gpt-5.4-mini",
-    "claude-code": "claude-sonnet-4-5-20250929",
+    "claude-code": "claude-sonnet-4-5",
     "mock": "mock-model",
     "none": "none",
     "litellm": "gpt-4o-mini",

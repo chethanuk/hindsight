@@ -160,7 +160,7 @@ Each provider has a recommended default model that's used when `HINDSIGHT_API_LL
 | `openrouter` | `qwen/qwen3.5-9b` |
 | `requesty` | `openai/gpt-4o-mini` |
 | `openai-codex` | `gpt-5.4-mini` |
-| `claude-code` | `claude-sonnet-4-5-20250929` |
+| `claude-code` | `claude-sonnet-4-5` |
 | `bedrock` | `us.amazon.nova-2-lite-v1:0` |
 | `fireworks` | `accounts/fireworks/models/llama-v3p1-8b-instruct` |
 | `nous` | `deepseek/deepseek-v4-flash` |

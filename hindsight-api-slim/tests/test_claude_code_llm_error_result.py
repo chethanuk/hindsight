@@ -28,6 +28,7 @@ QUOTA_ERROR_TEXT = "You've hit your weekly limit · resets Jul 18, 12pm (UTC)"
 class _FakeOptions:
     """Stand-in for ClaudeAgentOptions; captures kwargs without importing SDK."""
 
+    model: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
     allowed_tools: list[str] = field(default_factory=list)
