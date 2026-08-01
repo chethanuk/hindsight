@@ -22,14 +22,15 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import AsyncExitStack
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from itertools import combinations
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import asyncpg
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationInfo, field_validator
 
 from ...config import get_config
 from ...worker.stage import set_stage
@@ -670,10 +671,61 @@ class _DeleteAction(BaseModel):
     reason: str = ""  # LLM's one-sentence justification (diagnostic only)
 
 
+# Label of the batch being consolidated, so the per-item drop warning below can name it.
+# That warning fires deep inside the provider's response parsing (llm_config.call ->
+# response_format.model_validate), where batch_label is not in scope.
+# ponytail: set, never reset. Each batch overwrites it before its own call and
+# concurrent batches get their own context copy (asyncio wraps them in Tasks), so the
+# worst case is a leaked label mislabelling a warning line.
+_batch_label_var: ContextVar[str] = ContextVar("consolidation_batch_label", default="unlabelled batch")
+
+
 class _ConsolidationBatchResponse(BaseModel):
     creates: list[_CreateAction] = []
     updates: list[_UpdateAction] = []
     deletes: list[_DeleteAction] = []
+
+    @field_validator("creates", "updates", "deletes", mode="before")
+    @classmethod
+    def drop_invalid_items(cls, v: Any, info: ValidationInfo) -> Any:
+        """Drop individual malformed actions instead of failing the whole batch (#3003).
+
+        One update missing `observation_id` used to raise ValidationError inside the
+        provider's response parsing, discarding every valid action in the same response
+        and spending the remaining attempts re-asking a model that answers the same way.
+
+        Dropping an update the LLM meant to make is real (bounded) loss — the observation
+        is not rewritten while its source facts are already marked consolidated — so each
+        drop warns rather than passing silently.
+
+        Non-list input passes through so a genuinely malformed response shape still
+        raises instead of becoming a silently empty list.
+        """
+        if not isinstance(v, list):
+            return v
+        # The item model comes off the field's own annotation, so the three declarations
+        # above stay the single source of truth instead of a name->model map that has to
+        # be kept in sync — and a subclass that redeclares one of them (see
+        # _build_response_model) filters against whatever it declares.
+        (item_model,) = get_args(cls.model_fields[info.field_name].annotation)
+        kept: list[BaseModel] = []
+        for item in v:
+            try:
+                kept.append(item_model.model_validate(item))
+            except Exception as exc:
+                # Not just ValidationError: the item models' own `sanitize_text`
+                # validator raises TypeError on a non-string `text` (e.g. `"text": 42`),
+                # and *any* exception escaping here is the same whole-batch failure
+                # this validator exists to prevent. If the item can't be built, it's
+                # unusable — drop it and say so.
+                logger.warning(
+                    "[CONSOLIDATION] %s: dropped malformed %s entry from the LLM response (entry: %.300r): %s",
+                    _batch_label_var.get(),
+                    info.field_name,
+                    item,
+                    exc,
+                )
+        return kept
 
 
 @dataclass
@@ -2653,6 +2705,9 @@ async def _consolidate_batch_with_llm(
     else:
         ids_label = f"{', '.join(memory_ids[:3])}, ... +{len(memory_ids) - 3} more"
     batch_label = f"{len(memory_ids)} memories [{ids_label}]"
+    # Read by _ConsolidationBatchResponse.drop_invalid_items, which runs inside the
+    # provider's response parsing where this label is otherwise unreachable.
+    _batch_label_var.set(batch_label)
     for attempt in range(1, max_attempts + 1):
         try:
             call_kwargs: dict[str, Any] = {

@@ -1,5 +1,6 @@
 """Tests for consolidation retry budget configurability (issue #1042)."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -138,6 +139,43 @@ class TestConsolidationRetryBudget:
             config=mock_config,
         )
         assert "max_retries" not in mock_llm_config.call.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_partially_malformed_response_costs_no_attempts(self, mock_llm_config, mock_config, caplog):
+        """#3003: a single malformed update is dropped, not retried.
+
+        The provider parses the raw JSON through `response_format`, so the ValidationError
+        used to surface here as a plain batch failure — valid actions discarded and every
+        remaining attempt spent re-asking a model that answers the same way each time.
+        """
+        raw = {
+            "creates": [{"text": "User is training for a marathon.", "source_fact_ids": ["m1"]}],
+            "updates": [{"text": "User moved from Lisbon to Berlin in March."}],
+            "deletes": [{"observation_id": "obs-stale"}],
+        }
+
+        async def parse_like_the_provider(**kwargs):
+            return kwargs["response_format"].model_validate(raw)
+
+        mock_llm_config.call.side_effect = parse_like_the_provider
+
+        with caplog.at_level(logging.WARNING, logger="hindsight_api.engine.consolidation.consolidator"):
+            result = await _consolidate_batch_with_llm(
+                llm_config=mock_llm_config,
+                memories=[{"id": "m1", "text": "test"}],
+                union_observations=[],
+                union_source_facts={},
+                config=mock_config,
+            )
+
+        assert result.failed is False
+        assert mock_llm_config.call.call_count == 1, "no retry attempts burned on a deterministic parse failure"
+        assert [c.text for c in result.creates] == ["User is training for a marathon."]
+        assert result.updates == []
+        assert [d.observation_id for d in result.deletes] == ["obs-stale"]
+        assert any("1 memories [m1]" in r.message for r in caplog.records if r.levelno == logging.WARNING), (
+            "the drop warning must name the batch it came from"
+        )
 
     @pytest.mark.asyncio
     async def test_reduced_budget_limits_total_calls(self, mock_llm_config, mock_config):

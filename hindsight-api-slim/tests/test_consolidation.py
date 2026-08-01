@@ -2547,6 +2547,220 @@ class TestBuildResponseModel:
         assert len(result.creates) == expected_creates
 
 
+def _issue_3003_payload(**overrides) -> dict:
+    """The response shape from #3003: an UPDATE carrying only `text`.
+
+    `observation_id` and `source_fact_ids` are absent, which used to raise a
+    ValidationError for the whole response inside the provider's parsing.
+    """
+    payload = {
+        "creates": [{"text": "User is training for a marathon.", "source_fact_ids": ["fact-1"]}],
+        "updates": [{"text": "User moved from Lisbon to Berlin in March."}],
+        "deletes": [{"observation_id": "obs-stale"}],
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestDropInvalidBatchItems:
+    """#3003: one malformed action must not throw away the rest of the batch.
+
+    The validator runs inside the provider's `response_format.model_validate`, so a
+    ValidationError there escapes as an opaque batch failure — every valid create,
+    update and delete in the same response is lost and the retry budget is spent
+    re-asking a model that deterministically answers the same way.
+    """
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            pytest.param(_issue_3003_payload(), (1, 0, 1), id="bad-update-keeps-create-and-delete"),
+            pytest.param(
+                _issue_3003_payload(
+                    creates=[
+                        {"text": "obs one", "source_fact_ids": ["f1"]},
+                        {"text": "obs two", "source_fact_ids": ["f2"]},
+                    ]
+                ),
+                (2, 0, 1),
+                id="bad-update-plus-several-valid-creates",
+            ),
+            pytest.param(
+                _issue_3003_payload(updates=[{"text": "a"}, {"text": "b"}, {"observation_id": "o"}]),
+                (1, 0, 1),
+                id="all-updates-bad",
+            ),
+            pytest.param(
+                _issue_3003_payload(
+                    creates=[{"text": "no source ids"}],
+                    updates=[{"text": "t", "observation_id": "o1", "source_fact_ids": ["f1"]}],
+                ),
+                (0, 1, 1),
+                id="bad-create",
+            ),
+            pytest.param(
+                _issue_3003_payload(
+                    updates=[{"text": "t", "observation_id": "o1", "source_fact_ids": ["f1"]}],
+                    deletes=[{"reason": "forgot the id"}, {"observation_id": "obs-stale"}],
+                ),
+                (1, 1, 1),
+                id="bad-delete",
+            ),
+            pytest.param(
+                _issue_3003_payload(updates=[{"text": "t", "observation_id": "o1", "source_fact_ids": ["f1"]}]),
+                (1, 1, 1),
+                id="fully-valid-payload-untouched",
+            ),
+        ],
+    )
+    def test_malformed_items_dropped_valid_items_kept(self, payload: dict, expected: tuple[int, int, int]):
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse
+
+        result = _ConsolidationBatchResponse.model_validate(payload)
+        assert (len(result.creates), len(result.updates), len(result.deletes)) == expected
+
+    @pytest.mark.parametrize("bad_text", [42, ["a", "b"], {"value": "text"}, True], ids=["int", "list", "dict", "bool"])
+    def test_non_string_text_is_dropped_not_raised(self, bad_text):
+        """A wrong-typed `text` must be dropped like any other malformed entry.
+
+        `_CreateAction.sanitize_text` runs `re.sub` on the raw value, so a non-string
+        `text` raises TypeError — not ValidationError — and a filter that only caught
+        ValidationError would still let the whole batch die exactly as in #3003.
+        """
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse
+
+        result = _ConsolidationBatchResponse.model_validate(
+            _issue_3003_payload(
+                creates=[
+                    {"text": bad_text, "source_fact_ids": ["fact-1"]},
+                    {"text": "User is training for a marathon.", "source_fact_ids": ["fact-2"]},
+                ],
+                updates=[{"text": bad_text, "observation_id": "obs-1", "source_fact_ids": ["fact-3"]}],
+            )
+        )
+        assert [c.text for c in result.creates] == ["User is training for a marathon."]
+        assert result.updates == []
+        assert len(result.deletes) == 1
+
+    def test_valid_payload_round_trips_unchanged(self):
+        """No drop, no mutation: a clean response survives byte-identical."""
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse
+
+        payload = _issue_3003_payload(
+            updates=[
+                {
+                    "text": "User moved from Lisbon to Berlin in March.",
+                    "observation_id": "obs-1",
+                    "source_fact_ids": ["fact-2"],
+                    "reason": "new evidence",
+                }
+            ]
+        )
+        result = _ConsolidationBatchResponse.model_validate(payload)
+        assert result.creates[0].text == "User is training for a marathon."
+        assert result.creates[0].source_fact_ids == ["fact-1"]
+        assert result.updates[0].observation_id == "obs-1"
+        assert result.updates[0].source_fact_ids == ["fact-2"]
+        assert result.updates[0].reason == "new evidence"
+        assert result.deletes[0].observation_id == "obs-stale"
+
+    def test_drop_warns_with_batch_label_and_entry(self, caplog):
+        """The loss is visible: dropping an update the LLM intended is real (bounded)
+        semantic loss, so each drop must name the batch and the rejected entry."""
+        import logging
+
+        from hindsight_api.engine.consolidation.consolidator import (
+            _batch_label_var,
+            _ConsolidationBatchResponse,
+        )
+
+        token = _batch_label_var.set("2 memories [mem-a, mem-b]")
+        try:
+            with caplog.at_level(logging.WARNING, logger="hindsight_api.engine.consolidation.consolidator"):
+                _ConsolidationBatchResponse.model_validate(_issue_3003_payload())
+        finally:
+            _batch_label_var.reset(token)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "2 memories [mem-a, mem-b]" in warnings[0].message
+        assert "Lisbon to Berlin" in warnings[0].message
+
+    def test_drop_outside_a_consolidation_batch_uses_the_default_label(self, caplog):
+        """Direct callers (tests, future call sites) must not blow up on an unset var.
+
+        Read in a pristine `Context()` so a label leaked by an earlier test cannot
+        make this pass by accident.
+        """
+        import contextvars
+        import logging
+
+        from hindsight_api.engine.consolidation.consolidator import (
+            _batch_label_var,
+            _ConsolidationBatchResponse,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hindsight_api.engine.consolidation.consolidator"):
+            result = contextvars.Context().run(_ConsolidationBatchResponse.model_validate, _issue_3003_payload())
+
+        assert result.updates == []
+        assert contextvars.Context().run(_batch_label_var.get) in caplog.records[0].message
+
+    def test_constrained_subclass_filters_too(self):
+        """The Bedrock-constrained variant subclasses the base, so it inherits filtering."""
+        model = _build_response_model(5)
+        result = model.model_validate(_issue_3003_payload())
+        assert len(result.creates) == 1
+        assert result.updates == []
+
+    def test_emitted_schema_still_requires_all_action_fields(self):
+        """A before-validator must not relax the JSON schema — strict-schema and
+        response_schema providers grammar-enforce exactly these required fields."""
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse
+
+        defs = _ConsolidationBatchResponse.model_json_schema()["$defs"]
+        assert defs["_UpdateAction"]["required"] == ["text", "observation_id", "source_fact_ids"]
+        assert defs["_CreateAction"]["required"] == ["text", "source_fact_ids"]
+        assert defs["_DeleteAction"]["required"] == ["observation_id"]
+
+    def test_wholesale_malformed_response_still_raises(self):
+        """Only per-item failures are dropped; a garbage top-level shape must not be
+        laundered into a silently empty batch."""
+        from pydantic import ValidationError
+
+        from hindsight_api.engine.consolidation.consolidator import _ConsolidationBatchResponse
+
+        with pytest.raises(ValidationError):
+            _ConsolidationBatchResponse.model_validate({"creates": "not a list"})
+
+    def test_dropped_update_no_longer_suppresses_matching_create(self):
+        """Downstream effect: `update_texts` is built from the surviving updates, so a
+        CREATE that verbatim-matches a *dropped* update is no longer treated as its
+        duplicate — while a surviving update with that text still suppresses it."""
+        from hindsight_api.engine.consolidation.consolidator import (
+            _ConsolidationBatchResponse,
+            _duplicate_create_target,
+            _norm_obs_text,
+        )
+
+        text = "User moved from Lisbon to Berlin in March."
+
+        dropped = _ConsolidationBatchResponse.model_validate(
+            _issue_3003_payload(creates=[{"text": text, "source_fact_ids": ["fact-1"]}])
+        )
+        update_texts = {_norm_obs_text(u.text) for u in dropped.updates if u.text}
+        assert _duplicate_create_target(text, {}, update_texts) is None
+
+        kept = _ConsolidationBatchResponse.model_validate(
+            _issue_3003_payload(
+                creates=[{"text": text, "source_fact_ids": ["fact-1"]}],
+                updates=[{"text": text, "observation_id": "obs-1", "source_fact_ids": ["fact-2"]}],
+            )
+        )
+        kept_texts = {_norm_obs_text(u.text) for u in kept.updates if u.text}
+        assert _duplicate_create_target(text, {}, kept_texts) == "an UPDATE in this response"
+
+
 class TestDedupeUpdates:
     """`_dedupe_updates` collapses LLM responses that target one observation_id
     multiple times — without this, the second `_execute_update_action` call
