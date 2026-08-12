@@ -29,3 +29,21 @@ class TestMemoryFactMetadataCoercion:
 
     def test_none_metadata_stays_none(self):
         assert MemoryFact(**_BASE, metadata=None).metadata is None
+
+    def test_null_valued_key_is_dropped(self):
+        """Regression for #3209: metadata with null values must not raise ValidationError.
+
+        asyncpg/JSONB can return {"key": null}; previously str(None) -> "None" was wrong.
+        The fix drops null-valued keys so recall of pre-existing rows stays readable.
+        """
+        fact = MemoryFact(**_BASE, metadata={"present": "yes", "absent": None})
+        assert fact.metadata == {"present": "yes"}
+
+    def test_null_valued_key_dropped_via_json_string(self):
+        """Same as above but arriving as a raw JSON string (asyncpg JSONB-as-str path)."""
+        fact = MemoryFact(**_BASE, metadata='{"present": "yes", "absent": null}')
+        assert fact.metadata == {"present": "yes"}
+
+    def test_all_null_values_gives_empty_dict(self):
+        fact = MemoryFact(**_BASE, metadata={"a": None, "b": None})
+        assert fact.metadata == {}
