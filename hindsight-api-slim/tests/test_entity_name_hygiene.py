@@ -34,14 +34,31 @@ def _texts(all_entities_flat: list[dict]) -> list[str]:
     return [e["text"] for e in all_entities_flat]
 
 
-def _prepare(entities: list, unit_ids: list[str] | None = None):
+def _prepare(entities: list, unit_ids: list[str] | None = None, entity_labels: list | None = None):
     """Run one fact's candidate list through intake."""
     return _prepare_entities_for_resolution(
         unit_ids=unit_ids or ["u1"],
         sentences=["fact text"],
         fact_dates=[None],
         llm_entities=[entities],
+        entity_labels=entity_labels,
     )
+
+
+_LABELS = [  # both multi-values; only `topic` opts out
+    {"key": "topic", "tag": True, "index_as_entity": False, "values": [{"value": "health"}]},
+    {"key": "person", "tag": True, "values": [{"value": "alice"}]},
+]
+
+
+def test_suppressed_label_group_is_dropped_at_intake():
+    flat, _, entity_to_unit = _prepare(
+        [{"text": "topic:health"}, {"text": "person:alice"}, {"text": "nginx:latest"}],
+        entity_labels=_LABELS,
+    )
+    assert _texts(flat) == ["person:alice", "nginx:latest"]
+    assert len(entity_to_unit) == len(flat)  # positional invariant holds
+
 
 
 # --- _normalize_entity_name ---

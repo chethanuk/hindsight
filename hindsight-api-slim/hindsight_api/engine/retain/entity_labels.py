@@ -8,7 +8,7 @@ at retain time and stored as entities.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, model_validator
 
 
 class LabelValue(BaseModel):
@@ -38,8 +38,16 @@ class LabelGroup(BaseModel):
     type: Literal["value", "multi-values", "text", "map"] = "value"
     optional: bool = True
     tag: bool = False
+    index_as_entity: bool = True
     values: list[LabelValue] = []
     fields: dict[str, MapField] = {}
+
+    @model_validator(mode="after")
+    def validate_tag_and_index_as_entity(self) -> "LabelGroup":
+        if not self.tag and not self.index_as_entity:
+            raise ValueError("LabelGroup cannot have both tag=False and index_as_entity=False")
+        return self
+
 
 
 class EntityLabelsConfig(BaseModel):
@@ -263,6 +271,21 @@ def is_label_entity(text: str, labels_cfg: EntityLabelsConfig, labels_lookup: se
             if _is_map_label_entity(text.lower(), prefix, group.fields):
                 return True
     return False
+
+
+def suppressed_label_prefixes(labels_cfg: EntityLabelsConfig | list | dict | None) -> set[str]:
+    """
+    Return set of lowercase 'key:' prefixes for label groups with index_as_entity=False.
+    """
+    if isinstance(labels_cfg, EntityLabelsConfig):
+        parsed = labels_cfg
+    else:
+        parsed = parse_entity_labels(labels_cfg)
+    if not parsed:
+        return set()
+    return {f"{g.key.lower()}:" for g in parsed.attributes if g.key and not g.index_as_entity}
+
+
 
 
 def build_labels_lookup(labels_cfg: EntityLabelsConfig | list | None) -> set[str]:

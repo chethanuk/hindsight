@@ -18,6 +18,7 @@ from ..causal_links import (
 from ..db.base import DatabaseConnection
 from ..db.ops import DataAccessOps
 from ..memory_engine import fq_table
+from .entity_labels import suppressed_label_prefixes
 from .types import CausalRelation, EntityResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ def _prepare_entities_for_resolution(
     fact_dates: list,
     llm_entities: list[list[dict]],
     log_buffer: list[str] = None,
+    entity_labels: list | None = None,
 ) -> tuple[list[dict], list[list[dict]], list[tuple]]:
     """
     Convert LLM entities into the flat format expected by entity resolver.
@@ -204,8 +206,10 @@ def _prepare_entities_for_resolution(
         - entity_to_unit: maps flat index to (unit_id, local_index, fact_date)
     """
     substep_start = time.time()
+    suppressed_prefixes = suppressed_label_prefixes(entity_labels)
     all_entities = []
     dropped_empty = 0
+    dropped_suppressed = 0
     for entity_list in llm_entities:
         formatted_entities = []
         # Normalization can make two candidates that reached here as distinct
@@ -230,17 +234,22 @@ def _prepare_entities_for_resolution(
                 dropped_empty += 1
                 continue
 
-            if normalized_text.lower() in seen_in_fact:
+            lower_text = normalized_text.lower()
+            if suppressed_prefixes and any(lower_text.startswith(pfx) for pfx in suppressed_prefixes):
+                dropped_suppressed += 1
                 continue
-            seen_in_fact.add(normalized_text.lower())
+
+            if lower_text in seen_in_fact:
+                continue
+            seen_in_fact.add(lower_text)
 
             formatted_entities.append({"text": normalized_text, "type": entity_type})
         all_entities.append(formatted_entities)
 
-    if dropped_empty:
+    if dropped_empty or dropped_suppressed:
         _log(
             log_buffer,
-            f"  [6.1] Dropped {dropped_empty} empty candidate entity name(s)",
+            f"  [6.1] Dropped {dropped_empty} empty and {dropped_suppressed} suppressed label candidate entity name(s)",
             level="debug",
         )
 
@@ -318,7 +327,7 @@ async def resolve_entities_only(
         Phase 2.
     """
     all_entities_flat, _all_entities, entity_to_unit = _prepare_entities_for_resolution(
-        unit_ids, sentences, fact_dates, llm_entities, log_buffer
+        unit_ids, sentences, fact_dates, llm_entities, log_buffer, entity_labels=entity_labels
     )
 
     if not all_entities_flat:
