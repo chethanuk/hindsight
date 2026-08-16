@@ -344,8 +344,40 @@ class DaemonEmbedManager(EmbedManager):
                     for line in result.stdout.splitlines():
                         if f"127.0.0.1:{port}" in line and "LISTENING" in line:
                             return int(line.strip().split()[-1])
+            elif platform.system() == "Linux":
+                # Prefer ss (iproute2) on Linux
+                import re
+
+                try:
+                    result = subprocess.run(
+                        ["ss", "-tlnp", "sport", "=", f":{port}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.splitlines():
+                            if "users:" in line and f":{port}" in line:
+                                m = re.search(r"pid=(\d+)", line)
+                                if m:
+                                    return int(m.group(1))
+                except (subprocess.TimeoutExpired, ValueError, OSError, FileNotFoundError):
+                    pass
+
+                # Fallback to lsof on Linux if ss failed or returned no pid
+                try:
+                    result = subprocess.run(
+                        ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return int(result.stdout.strip().split()[0])
+                except (subprocess.TimeoutExpired, ValueError, OSError, FileNotFoundError):
+                    pass
             else:
-                # Use lsof on macOS/Linux
+                # Use lsof on macOS/other non-Windows non-Linux platforms
                 result = subprocess.run(
                     ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
                     capture_output=True,
