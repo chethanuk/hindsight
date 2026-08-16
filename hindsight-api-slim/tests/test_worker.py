@@ -1207,6 +1207,84 @@ class TestWorkerRecovery:
             assert row["claimed_at"] is None
 
     @pytest.mark.asyncio
+    async def test_recover_orphaned_processing_tasks_resets_other_worker_stale_tasks(self, pool, backend, clean_operations):
+        """Test that poller recovery pass resets stale processing tasks from other workers."""
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+
+        # Stale operation owned by dead worker (claimed 5 hours ago)
+        stale_op_id = uuid.uuid4()
+        payload = json.dumps({"type": "test_task", "bank_id": bank_id})
+        await pool.execute(
+            """
+            INSERT INTO async_operations (operation_id, bank_id, operation_type, status, task_payload, worker_id, claimed_at)
+            VALUES ($1, $2, 'test', 'processing', $3::jsonb, 'dead-worker-1', now() - INTERVAL '5 hours')
+            """,
+            stale_op_id,
+            bank_id,
+            payload,
+        )
+
+        poller = WorkerPoller(
+            backend=backend,
+            worker_id="active-worker-1",
+            executor=lambda x: None,
+            orphaned_task_timeout_seconds=14400,  # 4 hours
+        )
+
+        recovered_count = await poller.recover_own_tasks()
+        assert recovered_count == 1
+
+        row = await pool.fetchrow(
+            "SELECT status, worker_id, claimed_at, retry_count FROM async_operations WHERE operation_id = $1",
+            stale_op_id,
+        )
+        assert row["status"] == "pending"
+        assert row["worker_id"] is None
+        assert row["claimed_at"] is None
+        assert row["retry_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_recover_orphaned_processing_tasks_ignores_recent_tasks(self, pool, backend, clean_operations):
+        """Test that poller recovery pass ignores active processing tasks from other workers within timeout."""
+        from hindsight_api.worker import WorkerPoller
+
+        bank_id = f"test-worker-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(pool, bank_id)
+
+        # Active operation owned by another worker (claimed 10 minutes ago)
+        recent_op_id = uuid.uuid4()
+        payload = json.dumps({"type": "test_task", "bank_id": bank_id})
+        await pool.execute(
+            """
+            INSERT INTO async_operations (operation_id, bank_id, operation_type, status, task_payload, worker_id, claimed_at)
+            VALUES ($1, $2, 'test', 'processing', $3::jsonb, 'other-active-worker', now() - INTERVAL '10 minutes')
+            """,
+            recent_op_id,
+            bank_id,
+            payload,
+        )
+
+        poller = WorkerPoller(
+            backend=backend,
+            worker_id="active-worker-1",
+            executor=lambda x: None,
+            orphaned_task_timeout_seconds=14400,  # 4 hours
+        )
+
+        recovered_count = await poller.recover_own_tasks()
+        assert recovered_count == 0
+
+        row = await pool.fetchrow(
+            "SELECT status, worker_id FROM async_operations WHERE operation_id = $1",
+            recent_op_id,
+        )
+        assert row["status"] == "processing"
+        assert row["worker_id"] == "other-active-worker"
+
+    @pytest.mark.asyncio
     async def test_recover_own_tasks_does_not_affect_other_workers(self, pool, backend, clean_operations):
         """Test that recover_own_tasks only affects tasks from the same worker_id."""
         from hindsight_api.worker import WorkerPoller

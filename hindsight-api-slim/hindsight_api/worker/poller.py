@@ -227,6 +227,7 @@ class WorkerPoller:
         slot_reservations: dict[str, int] | None = None,
         consolidation_bank_priority: dict[str, int] | None = None,
         max_retries: int = 3,
+        orphaned_task_timeout_seconds: int = 14400,
     ):
         """
         Initialize the worker poller.
@@ -273,6 +274,7 @@ class WorkerPoller:
             consolidation_bank_priority if consolidation_bank_priority else None
         )
         self._max_retries = max(0, max_retries)  # Never negative
+        self._orphaned_task_timeout_seconds = max(0, orphaned_task_timeout_seconds)
         # Cache of which optional PG routines are installed on the server
         # (probed once, memoised for the life of the poller).
         from ..engine.db.optional_routines import OptionalRoutines
@@ -1126,6 +1128,62 @@ class WorkerPoller:
             )
         return _updated_row_count(result)
 
+    async def _reclaim_orphaned_processing_tasks(self, schema: str | None) -> int:
+        """Reclaim operations stuck in 'processing' past the cutoff horizon across all workers.
+
+        Resets tasks whose ``claimed_at`` is older than ``_orphaned_task_timeout_seconds``
+        to 'pending' (incrementing retry_count), or 'failed' if retry_count >= max_retries.
+        """
+        if self._orphaned_task_timeout_seconds <= 0:
+            return 0
+
+        table = fq_table("async_operations", schema)
+        max_retries = self._max_retries
+        timeout_seconds = self._orphaned_task_timeout_seconds
+
+        async with self._backend.acquire() as conn:
+            result = await conn.execute(
+                f"""
+                UPDATE {table}
+                SET status = 'pending', worker_id = NULL, claimed_at = NULL,
+                    retry_count = COALESCE(retry_count, 0) + 1, updated_at = now()
+                WHERE status = 'processing'
+                  AND result_metadata->>'batch_id' IS NULL
+                  AND claimed_at < now() - (INTERVAL '1 second' * $1)
+                  AND COALESCE(retry_count, 0) < $2
+                """,
+                timeout_seconds,
+                max_retries,
+            )
+            failed_rows = await conn.fetch(
+                f"""
+                UPDATE {table}
+                SET status = 'failed', worker_id = NULL, claimed_at = NULL,
+                    error_message = 'exceeded max recovery attempts (orphaned task timeout)',
+                    completed_at = now(), updated_at = now()
+                WHERE status = 'processing'
+                  AND result_metadata->>'batch_id' IS NULL
+                  AND claimed_at < now() - (INTERVAL '1 second' * $1)
+                  AND COALESCE(retry_count, 0) >= $2
+                RETURNING operation_id
+                """,
+                timeout_seconds,
+                max_retries,
+            )
+
+        for failed_row in failed_rows:
+            async with self._backend.acquire() as conn:
+                async with conn.transaction():
+                    await self._maybe_update_parent_operation(str(failed_row["operation_id"]), schema, conn)
+
+        if failed_rows:
+            schema_display = f'"{schema}"' if schema else str(schema)
+            logger.warning(
+                f"Worker {self._worker_id} moved {len(failed_rows)} orphaned tasks to 'failed' "
+                f"(exceeded {max_retries} recovery attempts in schema {schema_display})"
+            )
+        return _updated_row_count(result)
+
     async def recover_own_tasks(self) -> int:
         """
         Recover tasks that were assigned to this worker but not completed.
@@ -1154,6 +1212,7 @@ class WorkerPoller:
                 total_count += await self._recover_batch_operations(schema)
 
                 total_count += await self._reclaim_own_processing_tasks(schema)
+                total_count += await self._reclaim_orphaned_processing_tasks(schema)
 
                 # Finalize batch_retain parents that the aggregation left behind
                 # (crash between a child's terminal commit and the parent update,
