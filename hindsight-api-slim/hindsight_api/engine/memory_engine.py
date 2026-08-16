@@ -16129,51 +16129,75 @@ class MemoryEngine(MemoryEngineInterface):
                         *insert_args,
                     )
                 else:
-                    # Sub-bank dedup: the INSERT itself only materialises a row when no
-                    # operation of this type is already queued or running for the same
-                    # payload subject (e.g. one mental model), so the check cannot be
-                    # separated from the write (#3210).
+                    # Sub-bank dedup: skip the INSERT when an operation of this type is
+                    # already queued or running for the same payload subject, e.g. one
+                    # mental model (#3210).
                     #
-                    # 'processing' counts here, unlike the bank-wide branch above: the
-                    # only caller is the cron-scheduled refresh, whose next tick covers
-                    # anything the in-flight run misses, so a second op would just
+                    # 'processing' counts here, unlike the bank-wide branch above: both
+                    # callers (the cron-scheduled refresh and the post-consolidation
+                    # flush) re-fire on their next tick/round, so a second op would just
                     # re-check staleness and occupy a claim slot.
                     #
-                    # PostgreSQL JSON syntax: this path is reached only from the
-                    # maintenance loop, which is PostgreSQL-only. Oracle submits take
-                    # the unconditional branch above.
-                    subject = task_payload.get(dedupe_in_flight_payload_key)
-                    inserted = await conn.fetchval(
-                        f"""
-                        INSERT INTO {fq_table("async_operations")} (operation_id, bank_id, operation_type, result_metadata, status, task_payload)
-                        SELECT $1::uuid, $2, $3, $4::jsonb, $5::text, $6::jsonb
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM {fq_table("async_operations")}
-                            WHERE bank_id = $2 AND operation_type = $3
-                              AND status IN ('pending', 'processing')
-                              AND task_payload->>$7 = $8
+                    # The JSON key is interpolated, not bound. Oracle's ->> rewrite
+                    # (_JSON_ARROW_TEXT_RE in db/oracle.py) only matches a *quoted
+                    # literal* key, so a bound `->>$N` reaches Oracle unrewritten and
+                    # raises — which is why the query below is spelled with the key
+                    # inline. Callers pass an internal constant, never user input, but
+                    # assert that rather than trusting it.
+                    if not dedupe_in_flight_payload_key.isidentifier():
+                        raise ValueError(
+                            f"dedupe_in_flight_payload_key must be an identifier, got {dedupe_in_flight_payload_key!r}"
                         )
-                        RETURNING operation_id
-                        """,
-                        *insert_args,
-                        dedupe_in_flight_payload_key,
-                        subject,
-                    )
-                    if inserted is None:
-                        existing = await conn.fetchval(
+                    subject = task_payload.get(dedupe_in_flight_payload_key)
+                    in_flight_sql = f"""
+                        SELECT operation_id FROM {fq_table("async_operations")}
+                        WHERE bank_id = $1 AND operation_type = $2
+                          AND status IN ('pending', 'processing')
+                          AND task_payload->>'{dedupe_in_flight_payload_key}' = $3
+                        ORDER BY created_at
+                        LIMIT 1
+                    """
+                    if getattr(conn, "backend_type", "postgresql") == "oracle":
+                        # Oracle cannot express the PG form below: it needs a FROM DUAL
+                        # on the INSERT ... SELECT, and it has no RETURNING clause for
+                        # INSERT ... SELECT at all. Splitting the check off the write is
+                        # safe here only because `serialize` above holds FOR NO KEY
+                        # UPDATE (FOR UPDATE on Oracle) on the bank row for the whole
+                        # transaction, so no concurrent submit for this bank can
+                        # interleave between the SELECT and the INSERT.
+                        existing = await conn.fetchval(in_flight_sql, bank_id, operation_type, subject)
+                        if existing is None:
+                            await conn.execute(
+                                f"""
+                                INSERT INTO {fq_table("async_operations")} (operation_id, bank_id, operation_type, result_metadata, status, task_payload)
+                                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                                """,
+                                *insert_args,
+                            )
+                    else:
+                        # On PG the check rides inside the INSERT, so it holds even if
+                        # the bank-row lock above is ever relaxed.
+                        inserted = await conn.fetchval(
                             f"""
-                            SELECT operation_id FROM {fq_table("async_operations")}
-                            WHERE bank_id = $1 AND operation_type = $2
-                              AND status IN ('pending', 'processing')
-                              AND task_payload->>$3 = $4
-                            ORDER BY created_at
-                            LIMIT 1
+                            INSERT INTO {fq_table("async_operations")} (operation_id, bank_id, operation_type, result_metadata, status, task_payload)
+                            SELECT $1::uuid, $2, $3, $4::jsonb, $5::text, $6::jsonb
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM {fq_table("async_operations")}
+                                WHERE bank_id = $2 AND operation_type = $3
+                                  AND status IN ('pending', 'processing')
+                                  AND task_payload->>'{dedupe_in_flight_payload_key}' = $7
+                            )
+                            RETURNING operation_id
                             """,
-                            bank_id,
-                            operation_type,
-                            dedupe_in_flight_payload_key,
+                            *insert_args,
                             subject,
                         )
+                        existing = (
+                            None
+                            if inserted is not None
+                            else await conn.fetchval(in_flight_sql, bank_id, operation_type, subject)
+                        )
+                    if existing is not None:
                         logger.debug(
                             f"{operation_type} task already in flight for bank_id={bank_id} "
                             f"{dedupe_in_flight_payload_key}={subject}, skipping duplicate "
