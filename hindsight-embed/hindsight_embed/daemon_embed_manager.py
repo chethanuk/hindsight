@@ -359,9 +359,57 @@ class DaemonEmbedManager(EmbedManager):
         return None
 
     @staticmethod
-    def _kill_process(pid: int) -> bool:
+    def _is_hindsight_process(pid: int) -> bool:
+        """Return True if PID corresponds to a Hindsight process, False otherwise."""
+        if pid is None or pid <= 0 or pid == os.getpid():
+            return False
+
+        cmdline_args = []
+        try:
+            # Try reading /proc on Linux first (fast stdlib)
+            proc_cmdline = Path(f"/proc/{pid}/cmdline")
+            if proc_cmdline.exists():
+                raw = proc_cmdline.read_bytes()
+                cmdline_args = [arg for arg in raw.decode("utf-8", errors="ignore").split("\x00") if arg]
+            else:
+                # Fallback for macOS / systems without /proc
+                result = subprocess.run(
+                    ["ps", "-p", str(pid), "-o", "args="],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if result.returncode == 0:
+                    cmdline_args = result.stdout.strip().split()
+        except (OSError, ValueError, subprocess.SubprocessError, PermissionError, FileNotFoundError):
+            return False
+
+        if not cmdline_args:
+            return False
+
+        hindsight_targets = {
+            "hindsight_embed",
+            "hindsight.daemon",
+            "hindsight.api",
+            "hindsight_api",
+            "hindsight",
+        }
+
+        for arg in cmdline_args:
+            arg_lower = arg.lower()
+            if any(target in arg_lower for target in hindsight_targets):
+                return True
+
+        return False
+
+    @classmethod
+    def _kill_process(cls, pid: int) -> bool:
         """Kill a process by PID and wait for it to exit. Returns True if process is gone."""
         import signal
+
+        if not cls._is_hindsight_process(pid):
+            logger.warning(f"Refusing to kill non-Hindsight process (PID {pid})")
+            return False
 
         try:
             os.kill(pid, signal.SIGTERM)

@@ -1,5 +1,6 @@
 """Tests for daemon_client module."""
 
+import os
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
@@ -661,3 +662,37 @@ class TestStop:
             patch("hindsight_embed.daemon_embed_manager.time.sleep"),
         ):
             assert manager.stop("default") is False
+
+
+class TestIsHindsightProcess:
+    """Tests for _is_hindsight_process method."""
+
+    def test_is_hindsight_process_invalid_pids(self):
+        """Invalid PIDs, None, <=0, and current PID return False."""
+        assert DaemonEmbedManager._is_hindsight_process(None) is False
+        assert DaemonEmbedManager._is_hindsight_process(0) is False
+        assert DaemonEmbedManager._is_hindsight_process(-1) is False
+        assert DaemonEmbedManager._is_hindsight_process(os.getpid()) is False
+
+    def test_is_hindsight_process_foreign_process(self):
+        """Foreign process cmdline returns False."""
+        with patch("pathlib.Path.exists", return_value=True), patch(
+            "pathlib.Path.read_bytes", return_value=b"python\x00/other/app.py\x00"
+        ):
+            assert DaemonEmbedManager._is_hindsight_process(99999) is False
+
+    def test_is_hindsight_process_hindsight_process(self):
+        """Hindsight process cmdline returns True."""
+        with patch("pathlib.Path.exists", return_value=True), patch(
+            "pathlib.Path.read_bytes", return_value=b"python\x00-m\x00hindsight_api\x00--port\x008000\x00"
+        ):
+            assert DaemonEmbedManager._is_hindsight_process(99999) is True
+
+    def test_kill_process_refuses_foreign_process(self):
+        """_kill_process returns False and refuses to signal non-Hindsight process."""
+        with patch.object(DaemonEmbedManager, "_is_hindsight_process", return_value=False), patch(
+            "os.kill"
+        ) as mock_kill:
+            assert DaemonEmbedManager._kill_process(99999) is False
+            mock_kill.assert_not_called()
+
