@@ -637,6 +637,8 @@ class OpenAIEmbeddings(Embeddings):
         base_url: str | None = None,
         batch_size: int = 100,
         dimensions: int | None = None,
+        query_prefix: str = "",
+        passage_prefix: str = "",
         max_retries: int = 3,
     ):
         """
@@ -648,6 +650,8 @@ class OpenAIEmbeddings(Embeddings):
             base_url: Custom base URL for OpenAI-compatible API (e.g., Azure OpenAI endpoint)
             batch_size: Maximum batch size for embedding requests (default: 100)
             dimensions: Optional requested output dimensions for OpenAI text-embedding-3 models
+            query_prefix: Prefix to prepend to query inputs (default: "")
+            passage_prefix: Prefix to prepend to document/passage inputs (default: "")
             max_retries: Maximum number of retries for failed requests (default: 3)
         """
         self.api_key = api_key
@@ -655,6 +659,8 @@ class OpenAIEmbeddings(Embeddings):
         self.base_url = base_url
         self.batch_size = batch_size
         self.dimensions = dimensions
+        self.query_prefix = query_prefix
+        self.passage_prefix = passage_prefix
         self.max_retries = max_retries
         self._client = None
         self._dimension: int | None = None
@@ -713,6 +719,17 @@ class OpenAIEmbeddings(Embeddings):
                 self._dimension = len(response.data[0].embedding)
 
         logger.info(f"Embeddings: OpenAI provider initialized (model: {self.model}, dim: {self._dimension})")
+
+    def _encode_prefixed(self, texts: list[str], prefix: str) -> list[list[float]]:
+        if prefix:
+            texts = [f"{prefix}{t}" for t in texts]
+        return self.encode(texts)
+
+    def encode_query(self, texts: list[str]) -> list[list[float]]:
+        return self._encode_prefixed(texts, self.query_prefix)
+
+    def encode_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._encode_prefixed(texts, self.passage_prefix)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         """
@@ -1660,6 +1677,8 @@ def create_embeddings_from_env() -> Embeddings:
             base_url=base_url,
             batch_size=config.embeddings_openai_batch_size,
             dimensions=config.embeddings_openai_dimensions,
+            query_prefix=config.embeddings_openai_query_prefix,
+            passage_prefix=config.embeddings_openai_passage_prefix,
         )
     elif provider == "openai-codex":
         model = os.environ.get(ENV_EMBEDDINGS_OPENAI_MODEL, DEFAULT_EMBEDDINGS_OPENAI_MODEL)
@@ -1667,6 +1686,8 @@ def create_embeddings_from_env() -> Embeddings:
             model=model,
             batch_size=config.embeddings_openai_batch_size,
             dimensions=config.embeddings_openai_dimensions,
+            query_prefix=config.embeddings_openai_query_prefix,
+            passage_prefix=config.embeddings_openai_passage_prefix,
         )
     elif provider == "openrouter":
         api_key = config.embeddings_openrouter_api_key
@@ -1681,6 +1702,8 @@ def create_embeddings_from_env() -> Embeddings:
             base_url="https://openrouter.ai/api/v1",
             batch_size=config.embeddings_openai_batch_size,
             dimensions=config.embeddings_openai_dimensions,
+            query_prefix=config.embeddings_openai_query_prefix,
+            passage_prefix=config.embeddings_openai_passage_prefix,
         )
     elif provider == "requesty":
         api_key = config.embeddings_requesty_api_key
@@ -1695,6 +1718,8 @@ def create_embeddings_from_env() -> Embeddings:
             base_url="https://router.requesty.ai/v1",
             batch_size=config.embeddings_openai_batch_size,
             dimensions=config.embeddings_openai_dimensions,
+            query_prefix=config.embeddings_openai_query_prefix,
+            passage_prefix=config.embeddings_openai_passage_prefix,
         )
     elif provider == "zeroentropy":
         api_key = config.embeddings_zeroentropy_api_key
