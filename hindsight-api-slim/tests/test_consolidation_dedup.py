@@ -24,7 +24,7 @@ from hindsight_api.engine.consolidation.consolidator import (
     _duplicate_create_target,
     _norm_obs_text,
 )
-from hindsight_api.engine.search.retrieval import SemanticBm25Result
+from hindsight_api.engine.memories import RecallArms
 from hindsight_api.engine.search.types import RetrievalResult
 
 
@@ -200,10 +200,10 @@ def _ctx(threshold: float = 0.97):
 
 
 def _patch_probe(results):
-    return patch(
-        "hindsight_api.engine.search.retrieval.retrieve_semantic_bm25_combined",
-        AsyncMock(return_value={"observation": SemanticBm25Result(results, [], None)}),
-    )
+    # Dedup's candidate probe now goes through the memories store's unified recall method (dense
+    # arm only), so stub the store rather than the old routing wrapper.
+    store = types.SimpleNamespace(recall_unified=AsyncMock(return_value={"observation": RecallArms(semantic=results)}))
+    return patch("hindsight_api.engine.memories.get_memories", lambda: store)
 
 
 def _patch_embed():
@@ -335,6 +335,24 @@ async def test_dedup_llm_merge_folds_into_twin() -> None:
     assert args[1] == "Uzbek content on YouTube is very rich."  # merged text persisted
     assert args[2] == kwargs["create_source_ids"]  # new (live) source facts folded in
     assert args[3] == uuid.UUID(_TWIN_ID)  # onto the twin row
+
+
+async def test_dedup_llm_merge_sanitizes_text_before_write() -> None:
+    # The merge path writes the LLM's synthesized text straight to the fold UPDATE, so it needs
+    # the same character-safety scrub _CreateAction/_UpdateAction already apply via field_validator.
+    # A raw NUL reaching the driver breaks the Postgres UTF-8 encode.
+    kwargs, conn, llm = _ctx()
+    kwargs["create_source_ids"] = [uuid.uuid4(), uuid.uuid4()]
+    llm.call.return_value = _DedupDecision(
+        action="merge", text="Uzbek content\x00 on YouTube is very rich.", reason="same fact"
+    )
+    with _patch_embed(), _patch_probe([_obs("Uzbek content on YouTube is described as very rich.", 0.99)]):
+        result = await _dedup_reconcile_create(**kwargs)
+    assert result == _TWIN_ID  # still folds into the twin
+    conn.fetchval.assert_awaited_once()
+    args = conn.fetchval.await_args.args
+    assert "\x00" not in args[1]  # the control character never reaches SQL
+    assert args[1] == "Uzbek content on YouTube is very rich."  # scrubbed, not mangled
 
 
 async def test_dedup_picks_highest_above_threshold_skips_below() -> None:
