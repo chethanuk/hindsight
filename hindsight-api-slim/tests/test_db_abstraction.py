@@ -540,6 +540,30 @@ class TestOracleQueryRewriter:
         assert "JSON_VALUE" in query
         assert "'true'" in query
 
+    @pytest.mark.parametrize(
+        "predicate,expected",
+        [
+            ("task_payload->>'mental_model_id' = $1", "JSON_VALUE(task_payload, '$.mental_model_id')"),
+            ("\"trigger\"->>'refresh_cron' = $1", "JSON_VALUE(\"trigger\", '$.refresh_cron')"),
+        ],
+    )
+    def test_jsonb_arrow_rewrite_needs_a_literal_key(self, predicate: str, expected: str):
+        """A ->> key must be inlined, never bound.
+
+        _JSON_ARROW_TEXT_RE only matches a quoted literal, so `task_payload->>$7`
+        reaches Oracle as a raw PG operator and raises. The in-flight dedupe in
+        _submit_async_operation used to spell it that way, which silently broke
+        every post-consolidation mental-model refresh on Oracle (#3487).
+        """
+        from hindsight_api.engine.db.oracle import _rewrite_pg_to_oracle
+
+        query, _, _ = _rewrite_pg_to_oracle(f"SELECT 1 FROM t WHERE {predicate}")
+        assert expected in query
+        assert "->>" not in query
+
+        bound_key, _, _ = _rewrite_pg_to_oracle("SELECT 1 FROM t WHERE task_payload->>$7 = $8")
+        assert "->>" in bound_key, "a bound ->> key is left untranslated — Oracle rejects it"
+
     def test_jsonb_has_key_rewrite_on_reserved_word_column(self):
         """`trigger ? 'key'` must become JSON_EXISTS even though the reserved-word
         column is quoted before the JSON operators are rewritten."""
