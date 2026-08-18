@@ -268,7 +268,10 @@ class MemoryFact(BaseModel):
 
             v = json.loads(v)
         if isinstance(v, dict):
-            return {str(k): str(val) for k, val in v.items()}
+            # Drop null-valued keys so rows stored with {"key": null} remain readable
+            # without a ValidationError (the alternative — widening to str | None — would
+            # require a schema change; dropping is data-loss-free since null carries no info).
+            return {str(k): str(val) for k, val in v.items() if val is not None}
         return v
 
     chunk_id: str | None = Field(
