@@ -21,6 +21,7 @@ from hindsight_api.engine.retain.entity_labels import (
     build_labels_model,
     is_label_entity,
     parse_entity_labels,
+    suppressed_label_prefixes,
 )
 
 # ─── parse_entity_labels ───────────────────────────────────────────────────────
@@ -296,6 +297,25 @@ def test_build_labels_lookup_raw_list():
 def test_build_labels_lookup_none():
     lookup = build_labels_lookup(None)
     assert lookup == set()
+
+
+def test_suppressed_label_prefix_computation():
+    """suppressed_label_prefixes returns lowercase key prefixes for index_as_entity=False groups."""
+    cfg = parse_entity_labels([
+        {"key": "topic", "tag": True, "index_as_entity": False, "values": [{"value": "health"}]},
+        {"key": "person", "tag": True, "index_as_entity": True, "values": [{"value": "alice"}]},
+    ])
+    assert suppressed_label_prefixes(cfg) == {"topic:"}
+    assert suppressed_label_prefixes(None) == set()
+
+
+def test_label_group_invalid_tag_and_index_as_entity_combination():
+    """LabelGroup raising ValueError when tag=False and index_as_entity=False."""
+    with pytest.raises(ValueError, match="LabelGroup cannot have both tag=False and index_as_entity=False"):
+        LabelGroup(key="topic", tag=False, index_as_entity=False)
+
+
+
 
 
 # ─── _build_labels_prompt_section ─────────────────────────────────────────────
