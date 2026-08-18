@@ -384,6 +384,75 @@ def test_find_pid_on_port_windows_hides_netstat_console(monkeypatch):
     assert calls[0][1]["creationflags"] == 0x08000000
 
 
+def test_find_pid_on_port_linux_ss_success(monkeypatch):
+    """Linux uses ss first to find listening process PID."""
+    calls = []
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=5):
+        calls.append(cmd)
+        result = MagicMock()
+        if cmd[0] == "ss":
+            result.returncode = 0
+            result.stdout = 'LISTEN 0 4096 127.0.0.1:9177 0.0.0.0:* users:(("hindsight-api",pid=15774,fd=19))\n'
+        else:
+            result.returncode = 1
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Linux")
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.subprocess.run", fake_run)
+
+    assert DaemonEmbedManager._find_pid_on_port(9177) == 15774
+    assert calls[0] == ["ss", "-tlnp", "sport", "=", f":{9177}"]
+
+
+def test_find_pid_on_port_linux_ss_fallback_to_lsof(monkeypatch):
+    """If ss fails or produces no PID on Linux, fall back to lsof."""
+    calls = []
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=5):
+        calls.append(cmd)
+        result = MagicMock()
+        if cmd[0] == "ss":
+            result.returncode = 1
+            result.stdout = ""
+        elif cmd[0] == "lsof":
+            result.returncode = 0
+            result.stdout = "9876\n"
+        else:
+            result.returncode = 1
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Linux")
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.subprocess.run", fake_run)
+
+    assert DaemonEmbedManager._find_pid_on_port(9177) == 9876
+    assert [c[0] for c in calls] == ["ss", "lsof"]
+
+
+def test_find_pid_on_port_macos_lsof_only(monkeypatch):
+    """macOS (Darwin) uses lsof without trying ss."""
+    calls = []
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=5):
+        calls.append(cmd)
+        result = MagicMock()
+        if cmd[0] == "lsof":
+            result.returncode = 0
+            result.stdout = "54321\n"
+        else:
+            result.returncode = 1
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("hindsight_embed.daemon_embed_manager.subprocess.run", fake_run)
+
+    assert DaemonEmbedManager._find_pid_on_port(9177) == 54321
+    assert [c[0] for c in calls] == ["lsof"]
+
+
 def test_stop_ui_kills_recorded_and_configured_ports(tmp_path, monkeypatch):
     """After a UI-port change, stop_ui must kill BOTH the recorded (old, actually
     running) port and the configured (new) port — otherwise the old UI orphans."""
