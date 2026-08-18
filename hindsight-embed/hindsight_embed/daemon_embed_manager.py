@@ -320,9 +320,11 @@ class DaemonEmbedManager(EmbedManager):
         """Check if a port is in use using a socket connection (cross-platform)."""
         import socket
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            return sock.connect_ex(("127.0.0.1", port)) == 0
+        try:
+            with socket.create_connection(("localhost", port), timeout=1):
+                return True
+        except OSError:
+            return False
 
     @staticmethod
     def _find_pid_on_port(port: int) -> int | None:
@@ -342,8 +344,9 @@ class DaemonEmbedManager(EmbedManager):
                 )
                 if result.returncode == 0:
                     for line in result.stdout.splitlines():
-                        if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-                            return int(line.strip().split()[-1])
+                        parts = line.split()
+                        if len(parts) >= 5 and parts[3] == "LISTENING" and parts[1].rsplit(":", 1)[-1] == str(port):
+                            return int(parts[4])
             else:
                 # Use lsof on macOS/Linux
                 result = subprocess.run(
@@ -779,13 +782,12 @@ class DaemonEmbedManager(EmbedManager):
         if ui_port is None:
             paths = self._profile_manager.resolve_profile_paths(profile)
             ui_port = paths.ui_port
-        host = hostname or "0.0.0.0"
+        host = hostname or "localhost"
         return f"http://{host}:{ui_port}"
 
     def is_ui_running(self, profile: str, ui_port: int | None = None) -> bool:
         """Check if the UI is running and responsive."""
-        # Always health-check on 127.0.0.1 regardless of bind hostname
-        ui_url = self.get_ui_url(profile, ui_port, hostname="127.0.0.1")
+        ui_url = self.get_ui_url(profile, ui_port)
         try:
             with httpx.Client(timeout=2) as client:
                 response = client.get(f"{ui_url}/api/health")
@@ -875,7 +877,7 @@ class DaemonEmbedManager(EmbedManager):
                 while time.time() - start_time < 30:
                     if self.is_ui_running(profile, ui_port):
                         self._record_ui_port(paths, ui_port)
-                        log_lines.append(f"✓ UI started at http://127.0.0.1:{ui_port}")
+                        log_lines.append(f"✓ UI started at http://localhost:{ui_port}")
                         log_lines.append(f"Logs: {ui_log}")
                         content = Text("\n".join(log_lines), style="dim")
                         success_title = (
