@@ -591,8 +591,9 @@ const RUNTIME_OPAQUE_SENDER_PREFIX_RE = /^\s*(?:om|ou|oc)_[A-Za-z0-9_-]+\s*:\s*/
 // fact). No payload field carries the display name, and a generic `Word:`
 // heuristic would eat ordinary user text ("计划: 今天修 retain 污染"), so the
 // pattern is operator-supplied. Unset = byte-identical to the old behaviour.
-// ponytail: one process-global compiled pattern — compile per config if a
-// single process ever hosts more than one plugin config.
+// One process-global compiled pattern, armed from getPluginConfig(): the host
+// holds a single hindsight-openclaw config, so every session in the process
+// shares it. Compile per config if that ever stops being true.
 let senderPrefixRe: RegExp | undefined;
 let senderPrefixSource: string | undefined;
 
