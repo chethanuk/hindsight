@@ -19,6 +19,7 @@ import { diag } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
 import type { HindsightClient } from "./hindsight";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
+import { buildPageTrigger } from "./missions";
 import { retainLiveSession, type TransportTurn } from "./chat";
 import { memoryCursorStore } from "./retain-cursor";
 import { buildRetainStamp } from "./retain-stamp";
@@ -77,6 +78,9 @@ export class RuntimeCore {
     return buildKnowledgeTools(this.client, this.bankId, {
       repoDir: this.projectDir,
       harness: this.harness,
+      pageTrigger: buildPageTrigger(this.cfg),
+      reflectTimeoutMs: this.cfg.reflectToolTimeoutMs,
+      reflectBudget: this.cfg.reflectBudget,
       stampFor: () =>
         buildRetainStamp(this.cfg, {
           directory: this.projectDir,

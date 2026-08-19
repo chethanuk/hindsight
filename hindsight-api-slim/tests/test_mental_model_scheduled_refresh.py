@@ -76,7 +76,7 @@ async def _insert_fact(conn, bank_id: str, tags: list[str] | None = None) -> Non
 def _patch_submit(memory: MemoryEngine, monkeypatch) -> list[str]:
     submitted: list[str] = []
 
-    async def _record(*, bank_id, mental_model_id, request_context, skip_if_in_flight=False):
+    async def _record(*, bank_id, mental_model_id, request_context, skip_if_in_flight=False, automatic=False):
         submitted.append(mental_model_id)
         return {"operation_id": str(uuid.uuid4())}
 
@@ -95,6 +95,15 @@ def _stall_worker(memory: MemoryEngine, monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(memory._task_backend, "submit_task", _never_runs)
+
+
+async def _mark_processing(memory: MemoryEngine, operation_id: str) -> None:
+    """Put a queued operation into the state a worker claim leaves it in."""
+    async with memory._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE async_operations SET status = 'processing' WHERE operation_id = $1",
+            uuid.UUID(operation_id),
+        )
 
 
 async def _count_refresh_ops(memory: MemoryEngine, bank_id: str) -> int:
@@ -184,6 +193,7 @@ async def test_routine_returns_cron_models_excludes_plain_and_in_flight(memory: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
 async def test_due_and_stale_model_is_refreshed(memory: MemoryEngine, request_context, monkeypatch):
     """A model whose cron is due and that has new memories in scope is refreshed."""
     bank = await _make_bank(memory, request_context)
@@ -195,6 +205,33 @@ async def test_due_and_stale_model_is_refreshed(memory: MemoryEngine, request_co
     await MaintenanceLoop(memory)._run_scheduled_mm_refresh()
 
     assert mm_id in submitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.memory_backend_incompatible
+async def test_scheduled_refresh_is_marked_automatic(memory: MemoryEngine, request_context, monkeypatch):
+    """A cron refresh is subject to the minimum-interval floor.
+
+    Nobody asked for this refresh individually, so it is exactly what
+    ``min_refresh_interval_seconds`` rate-limits (#3480). The flag lives in the submit's
+    task payload, and dropping it here would silently exempt the whole cron path — with
+    no failing test anywhere, because the floor simply never engages.
+    """
+    bank = await _make_bank(memory, request_context)
+    async with memory._pool.acquire() as conn:
+        mm_id = await _insert_mm(conn, bank, refresh_cron="*/5 * * * *", last_refreshed_offset="1 day")
+        await _insert_fact(conn, bank)
+
+    recorded: dict[str, bool] = {}
+
+    async def _record(*, bank_id, mental_model_id, request_context, skip_if_in_flight=False, automatic=False):
+        recorded[mental_model_id] = automatic
+        return {"operation_id": str(uuid.uuid4())}
+
+    monkeypatch.setattr(memory, "submit_async_refresh_mental_model", _record)
+    await MaintenanceLoop(memory)._run_scheduled_mm_refresh()
+
+    assert recorded[mm_id] is True
 
 
 @pytest.mark.asyncio
@@ -247,11 +284,15 @@ async def test_concurrent_scheduled_submits_queue_one_refresh(memory: MemoryEngi
 
 
 @pytest.mark.asyncio
-async def test_user_triggered_refresh_is_not_deduplicated(memory: MemoryEngine, request_context, monkeypatch):
-    """An explicit refresh still queues while a scheduled one is in flight.
+async def test_user_triggered_refresh_still_queues_while_one_is_processing(
+    memory: MemoryEngine, request_context, monkeypatch
+):
+    """An explicit refresh still queues while a scheduled one is *running*.
 
-    The dedup is opt-in for the cron scheduler only: a user asking for a refresh has
-    new intent (e.g. an edited source query) and must not be silently swallowed.
+    Only a running refresh needs a second operation: it may have read the source query
+    before the user edited it, so a user asking for a refresh has new intent that the
+    in-flight run cannot be assumed to cover. (A merely *queued* refresh does cover it —
+    see test_user_triggered_refresh_folds_into_a_queued_one.)
     """
     bank = await _make_bank(memory, request_context)
     async with memory._pool.acquire() as conn:
@@ -261,6 +302,7 @@ async def test_user_triggered_refresh_is_not_deduplicated(memory: MemoryEngine, 
     scheduled = await memory.submit_async_refresh_mental_model(
         bank_id=bank, mental_model_id=mm_id, request_context=request_context, skip_if_in_flight=True
     )
+    await _mark_processing(memory, scheduled["operation_id"])
     manual = await memory.submit_async_refresh_mental_model(
         bank_id=bank, mental_model_id=mm_id, request_context=request_context
     )
